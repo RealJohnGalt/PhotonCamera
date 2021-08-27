@@ -94,12 +94,16 @@ public class PostPipeline extends GLBasePipeline {
         //add(new DynamicBL());
         //add(new GlobalToneMapping(0,"GlobalTonemap"));
         if(PhotonCamera.getSettings().hdrxNR) {
+            add(new Median(new Point(1,1),3,"MedianColor",R.raw.mediancolor));
+            add(new Median(new Point(1,1),3,"MedianColor",R.raw.mediancolor));
             add(new SmartNR());
         }
 
         add(new Initial());
 
         add(new Equalization());
+
+        //add(new GlobalToneMapping());
 
 
         //add(new AWB());
