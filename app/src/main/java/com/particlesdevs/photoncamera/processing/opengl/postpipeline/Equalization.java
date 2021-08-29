@@ -441,7 +441,7 @@ public class Equalization extends Node {
     int histSize = 4096;
     int blackLevelSearch = 384;
     float edgesBilateralSmooth = 3.5f;
-    float edgesBilateralSmoothNight = 1.0f;
+    float edgesBilateralSmoothNight = 3.0f;
     float highLightSmoothAmplify = 2.5f;
     float shadowsSensitivity = 0.5f;
     float blackLevelSensitivity = 1.1f;
@@ -666,6 +666,7 @@ public class Equalization extends Node {
             shadowCurve[i+2] = (histParser.histb[i/3]);
         }*/
         double shadowW = (basePipeline.mSettings.shadows);
+        double avrbr = 0.0;
         for(int i =0; i<histParser.hist.length;i++){
             float line = i/(histParser.hist.length-1.f);
             if(shadowW != 0.f) {
@@ -674,7 +675,13 @@ public class Equalization extends Node {
                 else histParser.hist[i] = (float)mix(histParser.hist[i],(histParser.hist[i])*(histParser.hist[i]),-(shadowW)*shadowsSensitivity);
             }
             histParser.hist[i] = mix(histParser.hist[i],line,line*line*highlightCompress);
+            avrbr+=histParser.hist[i];
         }
+        avrbr/=histParser.hist.length;
+        float desaturate = 0.5f/(float)avrbr;
+        desaturate = Math.max(1.f,desaturate);
+        desaturate*=1.0;
+        desaturate-=1.0;
         if(basePipeline.mSettings.DebugData) GenerateCurveBitmWB(histParser.hist,BLPredictShift,new float[]{WL,WL,WL});
         GLTexture histogram = new GLTexture(histParser.hist.length,1,new GLFormat(GLFormat.DataType.FLOAT_16),
                 FloatBuffer.wrap(histParser.hist), GL_LINEAR, GL_CLAMP_TO_EDGE);
@@ -684,6 +691,7 @@ public class Equalization extends Node {
         glProg.setDefine("BR",(float)(shadowW)*shadowsSensitivity);
         File customlut = new File(FileManager.sPHOTON_TUNING_DIR,"lut.png");
         glProg.setDefine("TONEMAP",enableTonemap);
+        glProg.setDefine("DESAT",desaturate);
         if(customlut.exists()){
             lutbm = BitmapFactory.decodeFile(customlut.getAbsolutePath());
             lut = new GLTexture(lutbm,GL_LINEAR,GL_CLAMP_TO_EDGE,0);
