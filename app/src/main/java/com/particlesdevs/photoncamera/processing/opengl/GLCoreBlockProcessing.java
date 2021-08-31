@@ -107,7 +107,8 @@ public class GLCoreBlockProcessing extends GLContext {
     }
     public ByteBuffer drawBlocksToOutput(Point size, GLFormat glFormat,Allocate alloc) {
         ByteBuffer mOutBuffer;
-        if(alloc == Allocate.Direct) mOutBuffer = ByteBuffer.allocateDirect(size.x * size.y * glFormat.mFormat.mSize * glFormat.mChannels); else
+        if(alloc == Allocate.Direct) mOutBuffer = ByteBuffer.allocateDirect(size.x * size.y * glFormat.mFormat.mSize * glFormat.mChannels);
+        else
             mOutBuffer = ByteBuffer.allocate(size.x * size.y * glFormat.mFormat.mSize * glFormat.mChannels);
         return drawBlocksToOutput(size,glFormat,mOutBuffer);
     }
@@ -138,7 +139,9 @@ public class GLCoreBlockProcessing extends GLContext {
                 mBlockBuffert.get(data);
                 mOutBuffer.put(data);
             } else {
-                mOutBuffer.put(mBlockBuffert);
+                int lim = mBlockBuffert.limit();
+                mOutBuffer.put((ByteBuffer) mBlockBuffert.limit(size.x * GLDrawParams.TileSize * glFormat.mFormat.mSize * glFormat.mChannels));
+                mBlockBuffert.limit(lim);
             }
         }
         mOutBuffer.position(0);
