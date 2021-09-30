@@ -33,7 +33,6 @@ import com.particlesdevs.photoncamera.settings.PreferenceKeys;
 import com.particlesdevs.photoncamera.settings.SettingsManager;
 import com.particlesdevs.photoncamera.ui.SplashActivity;
 import com.particlesdevs.photoncamera.util.AssetLoader;
-import com.particlesdevs.photoncamera.util.ObjectLoader;
 import com.particlesdevs.photoncamera.util.log.ActivityLifecycleMonitor;
 
 import java.util.concurrent.ExecutorService;
@@ -61,7 +60,6 @@ public class PhotonCamera extends Application {
     private SettingsManager mSettingsManager;
     private AssetLoader mAssetLoader;
     private RenderScript mRS;
-    private ObjectLoader objectLoader;
 
     @Nullable
     public static PhotonCamera getInstance(Context context) {
