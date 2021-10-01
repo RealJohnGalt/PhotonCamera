@@ -130,9 +130,9 @@ public class ExposureFusionBayer2 extends Node {
     float baseExpose = 1.0f;
     float gaussSize = 0.5f;
     float targetLuma = 0.5f;
-    float downScalePerLevel = 1.9f;
+    float downScalePerLevel = 2.1f;
     float dehazing = 0.5f;
-    int curvePointsCount = 5;
+    int curvePointsCount = 6;
     float[] toneCurveX;
     float[] toneCurveY;
     GLTexture interpolatedCurve;
@@ -165,18 +165,20 @@ public class ExposureFusionBayer2 extends Node {
             toneCurveY[i] = 1.0f;
         }
 
-        if(curvePointsCount == 5) {
+        if(curvePointsCount == 6) {
             toneCurveX[0] = 0.0f;
             toneCurveX[1] = 0.07f;
-            toneCurveX[2] = 0.25f;
-            toneCurveX[3] = 0.95f;
-            toneCurveX[4] = 1.0f;
+            toneCurveX[2] = 0.2f;
+            toneCurveX[3] = 0.55f;
+            toneCurveX[4] = 0.95f;
+            toneCurveX[5] = 1.0f;
 
             toneCurveY[0] = 0.7f;
-            toneCurveY[1] = 1.0f;
-            toneCurveY[2] = 1.0f;
+            toneCurveY[1] = 1.5f;
+            toneCurveY[2] = 1.75f;
             toneCurveY[3] = 0.85f;
-            toneCurveY[4] = 0.40f;
+            toneCurveY[4] = 0.7f;
+            toneCurveY[5] = 0.4f;
         }
 
         toneCurveX = getTuning("TonemapCurveX", toneCurveX);

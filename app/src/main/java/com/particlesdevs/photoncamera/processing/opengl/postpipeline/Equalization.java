@@ -446,14 +446,14 @@ public class Equalization extends Node {
     float edgesBilateralSmoothNight = 3.0f;
     float highLightSmoothAmplify = 2.5f;
     float shadowsSensitivity = 0.5f;
-    float blackLevelSensitivity = 1.0f;
+    float blackLevelSensitivity = 1.3f;
     int whiteBalanceSearch = 400;
     float whiteBalanceSaturation = 1.35f;
     float[] tonemapCoeffs = new float[]{-0.78360f / 1.0063f, 0.84690f / 1.0063f, 0.9430f / 1.0063f, 0f};
     boolean disableEqualization = false;
     boolean enableTonemap = true;
     float highlightCompress = 0.4f;
-    float contrast = 0.2f;
+    float contrast = 0.25f;
     boolean useOldEqualization = false;
     boolean removeUnderexpose = true;
     @Override

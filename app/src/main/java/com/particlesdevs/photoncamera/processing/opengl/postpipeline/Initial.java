@@ -85,15 +85,15 @@ public class Initial extends Node {
 
         if(curvePointsCount == 6){
             intenseCurveX[0] = 0.0f;
-            intenseCurveX[1] = 0.3f;
-            intenseCurveX[2] = 0.65f;
+            intenseCurveX[1] = 0.2f;
+            intenseCurveX[2] = 0.55f;
             intenseCurveX[3] = 0.75f;
             intenseCurveX[4] = 0.95f;
             intenseCurveX[5] = 1.0f;
 
-            intenseCurveY[0] = 1.25f;
-            intenseCurveY[1] = 1.5f;
-            intenseCurveY[2] = 1.3f;
+            intenseCurveY[0] = 1.75f;
+            intenseCurveY[1] = 2.5f;
+            intenseCurveY[2] = 1.0f;
             intenseCurveY[3] = 0.85f;
             intenseCurveY[4] = 0.8f;
             intenseCurveY[5] = 0.0f;
