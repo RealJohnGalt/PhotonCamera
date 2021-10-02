@@ -91,11 +91,11 @@ public class Initial extends Node {
             intenseCurveX[4] = 0.95f;
             intenseCurveX[5] = 1.0f;
 
-            intenseCurveY[0] = 1.75f;
-            intenseCurveY[1] = 2.5f;
+            intenseCurveY[0] = 0.8f;
+            intenseCurveY[1] = 2.10f;
             intenseCurveY[2] = 1.0f;
-            intenseCurveY[3] = 0.85f;
-            intenseCurveY[4] = 0.8f;
+            intenseCurveY[3] = 0.6f;
+            intenseCurveY[4] = 0.3f;
             intenseCurveY[5] = 0.0f;
         }
 
