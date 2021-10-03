@@ -133,7 +133,7 @@ public class PostPipeline extends GLBasePipeline {
 
         add(new CorrectingFlow());
 
-        //add(new ChromaticFlow());
+        add(new ChromaticFlow());
 
         add(new Sharpen2());
 
