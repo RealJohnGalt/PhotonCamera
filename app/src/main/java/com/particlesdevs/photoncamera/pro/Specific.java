@@ -30,7 +30,7 @@ public class Specific {
         if(exists) {
             if (!loaded) {
                 try {
-                    BufferedReader indevice = HttpLoader.readURL("https://raw.githubusercontent.com/eszdman/PhotonCamera/dev/app/SupportedList.txt");
+                    BufferedReader indevice = HttpLoader.readURL("https://raw.githubusercontent.com/RealJohnGalt/PhotonCamera/rebase/app/SupportedList.txt");
                     String str;
                     boolean specificExists = false;
                     while ((str = indevice.readLine()) != null) {
@@ -39,7 +39,7 @@ public class Specific {
                     mSettingsManager.set(PreferenceKeys.Key.DEVICES_PREFERENCE_FILE_NAME.mValue, "specific_exists", specificExists);
                     if (!specificExists) return;
                     String device = Build.BRAND.toLowerCase() + "/" + Build.DEVICE.toLowerCase();
-                    BufferedReader in = HttpLoader.readURL("https://raw.githubusercontent.com/eszdman/PhotonCamera/dev/app/specific/" + device + "_specificsettings.txt");
+                    BufferedReader in = HttpLoader.readURL("https://raw.githubusercontent.com/RealJohnGalt/PhotonCamera/rebase/app/specific/" + device + "_specificsettings.txt");
                     while ((str = in.readLine()) != null) {
                         String[] caseS = str.split("=");
                         switch (caseS[0]) {

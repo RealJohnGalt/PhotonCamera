@@ -104,11 +104,12 @@ public class HdrxProcessor extends ProcessorBase {
         Log.d(TAG, "APPLY HDRX: buffer:" + mImageFramesToProcess.get(0).getPlanes()[0].getBuffer().asShortBuffer().remaining());
         Log.d(TAG, "Api WhiteLevel:" + characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL));
         Log.d(TAG, "Api BlackLevel:" + characteristics.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN));
-        PhotonCamera.getParameters().FillConstParameters(characteristics, new Point(width, height));
-        PhotonCamera.getParameters().FillDynamicParameters(captureResult);
-        PhotonCamera.getParameters().cameraRotation = cameraRotation;
+        Parameters processingParameters = PhotonCamera.getParameters();
+        processingParameters.FillConstParameters(characteristics, new Point(width, height));
+        processingParameters.FillDynamicParameters(captureResult);
+        processingParameters.cameraRotation = cameraRotation;
 
-        exifData.IMAGE_DESCRIPTION = PhotonCamera.getParameters().toString();
+        exifData.IMAGE_DESCRIPTION = processingParameters.toString();
 
         Log.d(TAG, "Wrapper.init");
         RawPipeline rawPipeline = new RawPipeline();
@@ -143,6 +144,7 @@ public class HdrxProcessor extends ProcessorBase {
             Log.d(TAG, "unlucky map:" + image.frameGyro.shakiness + "n:" + image.number);
         }
         unluckyavr /= images.size();
+
         if (images.size() >= 4) {
             int size = (int) (images.size() - FrameNumberSelector.throwCount);
             Log.d(TAG, "Throw Count:" + size);
@@ -175,44 +177,73 @@ public class HdrxProcessor extends ProcessorBase {
                 }
             }
         }
+        processingParameters.noiseModeler.computeStackingNoiseModel(1);
+        float NoiseS = processingParameters.noiseModeler.computeModel[0].first.floatValue()+
+                processingParameters.noiseModeler.computeModel[1].first.floatValue()+
+                processingParameters.noiseModeler.computeModel[2].first.floatValue();
+        float NoiseO = processingParameters.noiseModeler.computeModel[0].second.floatValue()+
+                processingParameters.noiseModeler.computeModel[1].second.floatValue()+
+                processingParameters.noiseModeler.computeModel[2].second.floatValue();
+        NoiseS/=3.f;
+        NoiseO/=3.f;
+        double noisempy = Math.pow(2.0,PhotonCamera.getSettings().noiseRstr+10.6);
+        int cnt = (int)((NoiseS + NoiseO)*1.5f/(0.001f));
+        cnt = Math.max(cnt,3);
+        cnt = Math.min(cnt,images.size());
+        processingParameters.noiseModeler.computeStackingNoiseModel(cnt);
+        Log.d(TAG,"Desired Frame count:"+cnt);
+        NoiseS = (float) Math.max(NoiseS*noisempy, Float.MIN_NORMAL);
+        NoiseO = (float) Math.max(NoiseO*noisempy*65535, Float.MIN_NORMAL);
         FrameNumberSelector.frameCount = images.size();
         if (!debugAlignment) {
-            Wrapper.init(width, height, images.size());
-            for (int i = 0; i < images.size(); i++) {
+            Wrapper.init(width, height, cnt);
+
+            for (int i = 0; i < cnt; i++) {
                 float mpy = minMpy / images.get(i).pair.layerMpy;
                 //if (images.get(i).pair.curlayer == IsoExpoSelector.ExpoPair.exposureLayer.Normal)
                 //    mpy = 1.f;
                 //if(images.get(i).pair.curlayer == IsoExpoSelector.ExpoPair.exposureLayer.Low) mpy = 1.f;
                 Log.d(TAG, "Load: i: " + i + " expo layer:" + images.get(i).pair.curlayer + " mpy:" + mpy);
-                Wrapper.loadFrame(images.get(i).buffer, ((FAKE_WL) / PhotonCamera.getParameters().whiteLevel) * mpy);
+                Wrapper.loadFrame(images.get(i).buffer, ((FAKE_WL) / processingParameters.whiteLevel) * mpy);
             }
         }
         rawPipeline.imageObj = mImageFramesToProcess;
         rawPipeline.images = images;
-        Log.d(TAG, "White Level:" + PhotonCamera.getParameters().whiteLevel);
+        Log.d(TAG, "White Level:" + processingParameters.whiteLevel);
         Log.d(TAG, "Wrapper.loadFrame");
-        float denoiseLevel = (float) Math.sqrt((CaptureController.mCaptureResult.get(CaptureResult.SENSOR_SENSITIVITY)) * IsoExpoSelector.getMPY() - 40.)*6400.f / (6.2f*IsoExpoSelector.getISOAnalog());
-        Log.d(TAG, "Denoising level:" + denoiseLevel);
+        //float noiseLevel = (float) Math.sqrt((CaptureController.mCaptureResult.get(CaptureResult.SENSOR_SENSITIVITY)) *
+        //        IsoExpoSelector.getMPY() - 40.)*6400.f / (6.2f*IsoExpoSelector.getISOAnalog());
+
+
 
         ByteBuffer output = null;
-        Parameters parameters = PhotonCamera.getParameters();
         InterpolateGainMap interpolateGainMap;
         if (!debugAlignment) {
             interpolateGainMap = new InterpolateGainMap(new Point(width, height));
-            interpolateGainMap.parameters = PhotonCamera.getParameters();
+            interpolateGainMap.parameters = processingParameters;
             interpolateGainMap.Run();
             interpolateGainMap.close();
             Wrapper.loadInterpolatedGainMap(interpolateGainMap.Output);
 
-	    output = ByteBuffer.allocateDirect(images.get(0).buffer.capacity());
+            /*float noiseLevel = (processingParameters.noiseModeler.computeModel[0].first.floatValue()+
+                    processingParameters.noiseModeler.computeModel[1].first.floatValue()+
+                    processingParameters.noiseModeler.computeModel[2].first.floatValue())*0.7f;
+            noiseLevel += processingParameters.noiseModeler.computeModel[0].second.floatValue()+
+                    processingParameters.noiseModeler.computeModel[1].second.floatValue()+
+                    processingParameters.noiseModeler.computeModel[2].second.floatValue();
+            noiseLevel*=Math.pow(2.0,19.0+PhotonCamera.getSettings().noiseRstr);
+            noiseLevel = Math.max(1.f,noiseLevel);
+            Log.d(TAG, "Denoising level:" + noiseLevel);*/
+            output = ByteBuffer.allocateDirect(images.get(0).buffer.capacity());
             Wrapper.outputBuffer(output);
-            Wrapper.processFrame(35*(0.6f+denoiseLevel)/2.f, 150*denoiseLevel, 6.f, 512, 0.f, 0.f, 0.f, parameters.whiteLevel
-                     ,parameters.whitePoint[0], parameters.whitePoint[1], parameters.whitePoint[2], parameters.cfaPattern);
+
+            Wrapper.processFrame(NoiseS, NoiseO, 6.f,1,0.f, 0.f, 0.f, processingParameters.whiteLevel
+                    , processingParameters.whitePoint[0], processingParameters.whitePoint[1], processingParameters.whitePoint[2], processingParameters.cfaPattern);
         } else {
         rawPipeline.alignAlgorithm = alignAlgorithm;
         output = rawPipeline.Run();
         }
-        float[] oldBL = parameters.blackLevel.clone();
+        float[] oldBL = processingParameters.blackLevel.clone();
 
         //Black shot fix
         images.get(0).image.getPlanes()[0].getBuffer().position(0);
@@ -247,10 +278,10 @@ public class HdrxProcessor extends ProcessorBase {
             Camera2ApiAutoFix.resetWL(characteristics, captureResult, patchWL);
 
             processingEventsListener.notifyImageSavedStatus(imageSaved, dngFile);
-            parameters.blackLevel[0] = oldBL[0];
-            parameters.blackLevel[1] = oldBL[1];
-            parameters.blackLevel[2] = oldBL[2];
-            parameters.blackLevel[3] = oldBL[3];
+            processingParameters.blackLevel[0] = oldBL[0];
+            processingParameters.blackLevel[1] = oldBL[1];
+            processingParameters.blackLevel[2] = oldBL[2];
+            processingParameters.blackLevel[3] = oldBL[3];
             Camera2ApiAutoFix.resetWL(characteristics, captureResult, (int) FAKE_WL);
 
             /*parameters.blackLevel[0] = 0.f;
