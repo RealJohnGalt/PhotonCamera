@@ -452,8 +452,8 @@ public class Equalization extends Node {
     float[] tonemapCoeffs = new float[]{-0.78360f / 1.0063f, 0.84690f / 1.0063f, 0.9430f / 1.0063f, 0f};
     boolean disableEqualization = false;
     boolean enableTonemap = true;
-    float highlightCompress = 0.4f;
-    float contrast = 0.25f;
+    float highlightCompress = 1.2f;
+    float contrast = 0.3f;
     boolean useOldEqualization = false;
     boolean removeUnderexpose = true;
     @Override
