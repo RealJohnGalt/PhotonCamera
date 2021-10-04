@@ -128,7 +128,7 @@ public class ExposureFusionBayer2 extends Node {
     float underExposeMpy = 0.1f;
     float underExposeMinFusion = 0.0f;
     float gammaKSearch = 1.0f;
-    float baseExpose = 1.0f;
+    float baseExpose = 1.5f;
     float gaussSize = 0.5f;
     float targetLuma = 0.5f;
     float downScalePerLevel = 2.1f;
