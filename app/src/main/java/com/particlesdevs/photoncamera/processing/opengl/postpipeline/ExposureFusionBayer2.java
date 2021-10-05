@@ -128,7 +128,7 @@ public class ExposureFusionBayer2 extends Node {
     float underExposeMpy = 0.1f;
     float underExposeMinFusion = 0.0f;
     float gammaKSearch = 1.0f;
-    float baseExpose = 1.5f;
+    float baseExpose = 1.0f;
     float gaussSize = 0.5f;
     float targetLuma = 0.5f;
     float downScalePerLevel = 2.1f;
@@ -230,8 +230,8 @@ public class ExposureFusionBayer2 extends Node {
         downscaled.close();
         float overexposure = autoExposureHigh();
         float underexposure = autoExposureLow();
-        ((PostPipeline)basePipeline).softLight = Math2.smoothstep(softLoverLevel, softUpperLevel,((1.f/overexposure)+underexposure)/2.f);
-        Log.d(Name,"SoftLightk:"+((PostPipeline)basePipeline).softLight);
+        //((PostPipeline)basePipeline).softLight = Math2.smoothstep(softLoverLevel, softUpperLevel,overexposure+underexposure);
+        //Log.d(Name,"SoftLightk:"+((PostPipeline)basePipeline).softLight);
 
         overexposure*=overExposeMpy;
         underexposure*=underExposeMpy;
