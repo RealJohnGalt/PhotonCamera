@@ -18,7 +18,7 @@ public class NoiseModeler {
         baseModel = new Pair[3];
         computeModel = new Pair[3];
         //inModel = null;
-        if (inModel == null || inModel.length == 0 || specificSettingSensor != null || inModel[0].first == 0.0) {
+        if (inModel == null || inModel.length == 0 || specificSettingSensor != null) {
             Pair<Double, Double> CustomGeneratorS;
             Pair<Double, Double> CustomGeneratorO;
             if(specificSettingSensor != null) {
@@ -64,6 +64,11 @@ public class NoiseModeler {
                 baseModel[0] = new Pair<>(inModel[0].first, inModel[0].second);
                 baseModel[1] = new Pair<>((inModel[1].first + inModel[2].first) / 2.0, (inModel[1].second + inModel[2].second) / 2.0);
                 baseModel[2] = new Pair<>(inModel[3].first, inModel[3].second);
+            }
+	    if (inModel[0].first == 0.0) {
+	        baseModel[0] = new Pair<>(1.723524778290816e-06, 1.6350221136097833e-06);
+		baseModel[1] = new Pair<>((-2.134295780752146e-05 + -4.1202352402298914e-14) / 2.0, (1.6784910859191478e-05 + -6.222889838516411e-14) / 2.0);
+		baseModel[2] = new Pair<>(1.0335175408750888e-06, 5.508194762633859e-07);
             }
         }
 
