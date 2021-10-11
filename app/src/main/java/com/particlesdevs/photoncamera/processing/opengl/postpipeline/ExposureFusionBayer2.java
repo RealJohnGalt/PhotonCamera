@@ -123,9 +123,9 @@ public class ExposureFusionBayer2 extends Node {
     Histogram histogram;
     Point initialSize;
     Point WorkSize;
-    float overExposeMpy = 1.7f;
+    float overExposeMpy = 2.4f;
     float overExposeMaxFusion = 0.9f;
-    float underExposeMpy = 0.3f;
+    float underExposeMpy = 0.25f;
     float underExposeMinFusion = 0.0f;
     float gammaKSearch = 1.0f;
     float baseExpose = 1.5f;
@@ -179,12 +179,12 @@ public class ExposureFusionBayer2 extends Node {
             toneCurveX[4] = 0.95f;
             toneCurveX[5] = 1.0f;
 
-            toneCurveY[0] = 0.5f;
-            toneCurveY[1] = 0.85f;
-            toneCurveY[2] = 1.5f;
-            toneCurveY[3] = 0.9f;
+            toneCurveY[0] = 1.25f;
+            toneCurveY[1] = 1.75f;
+            toneCurveY[2] = 3.0f;
+            toneCurveY[3] = 0.85f;
             toneCurveY[4] = 0.65f;
-            toneCurveY[5] = 0.3f;
+            toneCurveY[5] = 0.35f;
         }
 
         toneCurveX = getTuning("TonemapCurveX", toneCurveX);
