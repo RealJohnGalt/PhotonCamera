@@ -123,16 +123,16 @@ public class ExposureFusionBayer2 extends Node {
     Histogram histogram;
     Point initialSize;
     Point WorkSize;
-    float overExposeMpy = 1.8f;
+    float overExposeMpy = 1.95f;
     float overExposeMaxFusion = 0.9f;
-    float underExposeMpy = 1.0f;
+    float underExposeMpy = 0.25f;
     float underExposeMinFusion = 0.0f;
     float gammaKSearch = 1.0f;
-    float baseExpose = 1.0f;
+    float baseExpose = 1.5f;
     float gaussSize = 0.5f;
     float targetLuma = 0.5f;
     float downScalePerLevel = 2.2f;
-    float dehazing = 0.5f;
+    float dehazing = 0.3f;
 
     float softUpperLevel = 0.1f;
     float softLoverLevel = 0.0f;
