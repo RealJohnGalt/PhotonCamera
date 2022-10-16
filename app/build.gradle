@@ -11,6 +11,7 @@ android {
         }
     }
     def versionPropsFile = file('version.properties')
+    compileSdk 33
     def versionBuild
     compileSdkVersion 32
     buildToolsVersion '30.0.3'
