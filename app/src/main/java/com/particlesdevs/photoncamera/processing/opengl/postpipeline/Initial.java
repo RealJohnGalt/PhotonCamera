@@ -109,29 +109,29 @@ import static com.particlesdevs.photoncamera.util.Math2.mix;
             intenseCurveX[0] = 0.0f;
             intenseCurveX[1] = 0.2f;
             intenseCurveX[2] = 0.4f;
-            intenseCurveX[3] = 0.6f;
+            intenseCurveX[3] = 0.65f;
             intenseCurveX[4] = 0.95f;
             intenseCurveX[5] = 1.0f;
 
             intenseCurveY[0] = 1.0f;
-            intenseCurveY[1] = 1.0f;
-            intenseCurveY[2] = 1.0f;
-            intenseCurveY[3] = 1.0f;
-            intenseCurveY[4] = 1.0f;
+            intenseCurveY[1] = 1.35f;
+            intenseCurveY[2] = 1.2f;
+            intenseCurveY[3] = 0.9f;
+            intenseCurveY[4] = 0.8f;
             intenseCurveY[5] = 1.0f;
 
             intenseHardCurveX[0] = 0.0f;
             intenseHardCurveX[1] = 0.2f;
             intenseHardCurveX[2] = 0.4f;
-            intenseHardCurveX[3] = 0.6f;
+            intenseHardCurveX[3] = 0.65f;
             intenseHardCurveX[4] = 0.95f;
             intenseHardCurveX[5] = 1.0f;
 
             intenseHardCurveY[0] = 1.0f;
-            intenseHardCurveY[1] = 1.0f;
-            intenseHardCurveY[2] = 1.0f;
-            intenseHardCurveY[4] = 1.0f;
-            intenseHardCurveY[3] = 1.0f;
+            intenseHardCurveY[1] = 1.4f;
+            intenseHardCurveY[2] = 1.25f;
+            intenseHardCurveY[3] = 0.85f;
+            intenseHardCurveY[4] = 0.95f;
             intenseHardCurveY[5] = 1.0f;
         }
 

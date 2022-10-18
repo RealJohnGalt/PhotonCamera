@@ -116,16 +116,16 @@ public class ExposureFusionBayer2 extends Node {
     GLHistogram glHistogram;
     Point initialSize;
     Point WorkSize;
-    float overExposeMpy = 1.8f;
-    float overExposeMaxFusion = 0.9f;
-    float underExposeMpy = 1.0f;
+    float overExposeMpy = 2.0f;
+    float overExposeMaxFusion = 0.92f;
+    float underExposeMpy = 0.8f;
     float underExposeMinFusion = 0.0f;
     float gammaKSearch = 1.0f;
     float baseExpose = 1.0f;
     float gaussSize = 0.5f;
     float targetLuma = 0.5f;
     float downScalePerLevel = 2.2f;
-    float dehazing = 0.25f;
+    float dehazing = 0.15f;
 
     float softUpperLevel = 0.1f;
     float softLoverLevel = 0.0f;
@@ -176,7 +176,7 @@ public class ExposureFusionBayer2 extends Node {
             toneCurveX[3] = 0.95f;
             toneCurveX[4] = 1.0f;
 
-            toneCurveY[0] = 0.7f;
+            toneCurveY[0] = 0.8f;
             toneCurveY[1] = 1.0f;
             toneCurveY[2] = 1.0f;
             toneCurveY[3] = 0.85f;

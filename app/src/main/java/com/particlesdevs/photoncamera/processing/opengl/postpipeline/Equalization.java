@@ -511,7 +511,7 @@ public class Equalization extends Node {
     float analyzeIntensity = -2.0f;
     float analyzeCenter = 0.5f;
     float curveCenter = 0.5f;
-    float edgesStretchShadows = 2.25f;
+    float edgesStretchShadows = 2.5f;
     float edgesStretchHighLight = 0.0f;
     int histSize = 4096;
     int blackLevelSearch = 384;
@@ -519,13 +519,13 @@ public class Equalization extends Node {
     float edgesBilateralSmoothNight = 3.0f;
     float highLightSmoothAmplify = 2.5f;
     float shadowsSensitivity = 0.5f;
-    float blackLevelSensitivity = 1.0f;
+    float blackLevelSensitivity = 1.75f;
     int whiteBalanceSearch = 400;
     float whiteBalanceSaturation = 1.35f;
     float[] tonemapCoeffs = new float[]{-0.78360f / 1.0063f, 0.84690f / 1.0063f, 0.9430f / 1.0063f, 0f};
     boolean disableEqualization = false;
     boolean enableTonemap = true;
-    float highlightCompress = 0.4f;
+    float highlightCompress = 0.5f;
     float contrast = 0.2f;
     boolean useOldEqualization = false;
     boolean removeUnderexpose = true;
