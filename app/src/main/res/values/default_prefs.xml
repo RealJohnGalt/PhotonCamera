@@ -6,7 +6,7 @@
     <bool name="pref_energy_safe_default">false</bool>
     <string name="pref_show_grid_default" translatable="false">0</string>
     <bool name="pref_wide169_default">false</bool>
-    <bool name="pref_show_watermark_default">true</bool>
+    <bool name="pref_show_watermark_default">false</bool>
     <bool name="pref_show_afdata_default">false</bool>
     <bool name="pref_show_roundedge_default">true</bool>
     <bool name="pref_system_nr_default">false</bool>
@@ -16,7 +16,7 @@
 
     <bool name="pref_quad_bayer_default">false</bool>
     <bool name="pref_remosaic_default">false</bool>
-    <bool name="pref_eis_photo_default">false</bool>
+    <bool name="pref_eis_photo_default">true</bool>
     <bool name="pref_fps_preview_default">false</bool>
     <bool name="pref_hdrx_mode_default">true</bool>
     <string name="pref_ae_mode_default" translatable="false">1</string>
@@ -55,7 +55,7 @@
     </string>
     <string name="gamma_default" translatable="false">[0f, 0.99981f]
     </string>
-    <string name="pref_framecount_default" translatable="false">30</string>
+    <string name="pref_framecount_default" translatable="false">15</string>
     <string name="pref_chroma_seekbar_default" translatable="false">12</string>
     <string name="pref_luma_seekbar_default" translatable="false">12</string>
     <string name="pref_sharpness_seekbar_default" translatable="false">0.50</string>
@@ -69,6 +69,6 @@
     <string name="pref_cfa_default_value" translatable="false">-1</string>
     <string name="pref_theme_default_value" translatable="false">-1</string>
     <string name="pref_theme_accent_default_value" translatable="false">default</string>
-    <bool name="pref_show_gradient_def_value">true</bool>
+    <bool name="pref_show_gradient_def_value">false</bool>
     <string name="pref_af_mode_default_value" translatable="false">1</string>
 </resources>
