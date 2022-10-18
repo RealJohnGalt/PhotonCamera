@@ -300,13 +300,6 @@ public class HdrxProcessor extends ProcessorBase {
         pipeline.highFrame = highexp;
 
         Bitmap img = pipeline.Run(images.get(0).image.getPlanes()[0].getBuffer(), PhotonCamera.getParameters());
-        if(img.getWidth() > img.getHeight()) {
-            int crop = (img.getHeight() - img.getWidth()*9/16)/2;
-            img = Bitmap.createBitmap(img, 0, crop, img.getWidth(),img.getWidth()*9/16);
-        } else {
-            int crop = (img.getWidth() - img.getHeight()*9/16)/2;
-            img = Bitmap.createBitmap(img, crop, 0, img.getHeight()*9/16,img.getHeight());
-        }
         img = overlay(img,pipeline.debugData.toArray(new Bitmap[0]));
         processingEventsListener.onProcessingFinished("HdrX JPG Processing Finished");
 
