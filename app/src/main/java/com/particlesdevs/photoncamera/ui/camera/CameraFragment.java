@@ -874,7 +874,6 @@ public class CameraFragment extends Fragment implements BaseActivity.BackPressed
                     cameraFragmentBinding.getRoot().setBackground(Utilities.resolveDrawable(requireActivity(),R.attr.cameraFragmentBackground));
                     break;
                 case PHOTO:
-                case MOTION:
                 default:
                     this.topbar.setEisVisible(true);
                     this.topbar.setFpsVisible(true);
@@ -916,7 +915,6 @@ public class CameraFragment extends Fragment implements BaseActivity.BackPressed
                         break;
                     case UNLIMITED:
                     case PHOTO:
-                    case MOTION:
                     case NIGHT:
                         camera_containerLP.topToTop = -1;
                         camera_containerLP.topToBottom = R.id.layout_topbar;
@@ -1001,7 +999,6 @@ public class CameraFragment extends Fragment implements BaseActivity.BackPressed
                     shutterButton = view;
                     switch (PhotonCamera.getSettings().selectedMode) {
                         case PHOTO:
-                        case MOTION:
                         case NIGHT:
                             if (view.isHovered()) resetTimer();
                             else startTimer();
@@ -1129,7 +1126,6 @@ public class CameraFragment extends Fragment implements BaseActivity.BackPressed
             Log.d(TAG, "onCameraModeChanged() called with: cameraMode = [" + cameraMode + "]");
             switch (cameraMode) {
                 case PHOTO:
-                case MOTION:
                 case NIGHT:
                 case UNLIMITED:
                 default:

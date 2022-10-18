@@ -1285,7 +1285,6 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
                             switch (CameraFragment.mSelectedMode) {
                                 case NIGHT:
                                 case PHOTO:
-                                case MOTION:
                                     mCaptureSession.captureBurst(captures, CaptureCallback, null);
                                     break;
                                 case UNLIMITED:
@@ -1658,7 +1657,6 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
                         mCaptureSession.setRepeatingBurst(captures, CaptureCallback, null);
                         break;
                     case PHOTO:
-                    case MOTION:
                         mCaptureSession.captureBurst(captures, CaptureCallback, null);
                         break;
                 }

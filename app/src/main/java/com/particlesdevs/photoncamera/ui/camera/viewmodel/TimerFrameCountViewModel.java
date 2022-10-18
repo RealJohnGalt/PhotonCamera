@@ -42,7 +42,6 @@ public class TimerFrameCountViewModel extends ViewModel {
         switch (PhotonCamera.getSettings().selectedMode) {
             case NIGHT:
             case PHOTO:
-            case MOTION:
                 break;
             case UNLIMITED:
                 frameCntTime.maxframe = 0;
