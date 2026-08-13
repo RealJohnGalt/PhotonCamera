@@ -37,6 +37,7 @@ import com.particlesdevs.photoncamera.gallery.compare.SSIVListener;
 import com.particlesdevs.photoncamera.gallery.files.GalleryFileOperations;
 import com.particlesdevs.photoncamera.gallery.files.ImageFile;
 import com.particlesdevs.photoncamera.gallery.helper.Constants;
+import com.particlesdevs.photoncamera.gallery.helper.UltraHdrGalleryUtil;
 import com.particlesdevs.photoncamera.gallery.model.GalleryItem;
 import com.particlesdevs.photoncamera.gallery.viewmodel.ExifDialogViewModel;
 import com.particlesdevs.photoncamera.gallery.viewmodel.GalleryViewModel;
@@ -54,7 +55,7 @@ import java.util.Locale;
 /**
  * Created by Vibhor Srivastava on 02-Dec-2020
  */
-public class ImageViewerFragment extends Fragment {
+public class ImageViewerFragment extends Fragment implements ImageAdapter.HdrStateListener {
     private static final String TAG = ImageViewerFragment.class.getSimpleName();
     private List<GalleryItem> galleryItems=new ArrayList<>(0);
     private ExifDialogViewModel exifDialogViewModel;
@@ -67,6 +68,7 @@ public class ImageViewerFragment extends Fragment {
     private boolean isExifVisible;
     private String mode;
     private int seek_position = 0;
+    private int lastHdrPosition = -1;
     private SSIVListener ssivListener = new SSIVListener() {
         @Override
         public void onScaleChanged(float newScale, int origin) {
@@ -93,6 +95,7 @@ public class ImageViewerFragment extends Fragment {
         fragmentGalleryImageViewerBinding = DataBindingUtil.inflate(inflater, R.layout.fragment_gallery_image_viewer, container, false);
         viewModel = new ViewModelProvider(requireActivity()).get(GalleryViewModel.class);
         initialiseDataMembers();
+        fragmentGalleryImageViewerBinding.hdrToggleText.setOnClickListener(this::onHdrToggleClicked);
         setClickListeners();
         return fragmentGalleryImageViewerBinding.getRoot();
     }
@@ -119,6 +122,7 @@ public class ImageViewerFragment extends Fragment {
             this.galleryItems = galleryItems;
             adapter = new ImageAdapter(this.galleryItems);
             adapter.setImageViewClickListener(ImageViewerFragment.this::onImageViewClicked);
+            adapter.setHdrStateListener(this);
             if (ssivListener != null) {
                 adapter.setSsivListener(ssivListener);
             }
@@ -132,6 +136,7 @@ public class ImageViewerFragment extends Fragment {
             initLinearRecyclerAdapter(galleryItems);
             viewPager.setCurrentItem(seek_position);
             linearRecyclerView.postDelayed(() -> linearRecyclerView.scrollToPosition(seek_position),500);
+            viewPager.post(() -> onPageHdrSelected(seek_position));
         }
     }
 
@@ -194,6 +199,7 @@ public class ImageViewerFragment extends Fragment {
                 updateExif();
                 updateScaleText();
                 linearRecyclerView.smoothScrollToPosition(position);
+                onPageHdrSelected(position);
             }
         });
         updateExif();
@@ -210,6 +216,104 @@ public class ImageViewerFragment extends Fragment {
 //        if (isCompareMode()) {
             fragmentGalleryImageViewerBinding.setMiniExifVisible(!fragmentGalleryImageViewerBinding.getButtonsVisible());
 //        }
+        if (adapter != null) {
+            int position = viewPager.getCurrentItem();
+            if (adapter.isHdrActive(position)) {
+                UltraHdrGalleryUtil.setWindowHdr(getActivity(), true);
+                updateHdrToggleUi(adapter.isHdrAvailable(position), true);
+            } else {
+                adapter.loadHdrForPosition(getSsivAt(position), position);
+                updateHdrToggleUi(adapter.isHdrAvailable(position), false);
+            }
+        }
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        UltraHdrGalleryUtil.setWindowHdr(getActivity(), false);
+        if (adapter != null && viewPager != null) {
+            int position = viewPager.getCurrentItem();
+            updateHdrToggleUi(adapter.isHdrAvailable(position), false);
+        }
+    }
+
+    /**
+     * Loads the Ultra HDR rendition for the newly selected page and releases
+     * the previous page's HDR bitmap so at most one full-resolution HDR
+     * bitmap stays in memory. The window color mode is re-synchronised with
+     * the visible page so an HDR window can never linger while a plain SDR
+     * image is displayed; the HDR state listener re-enables it as soon as
+     * the Ultra HDR decode for the current page completes.
+     */
+    private void onPageHdrSelected(int position) {
+        if (adapter == null) {
+            return;
+        }
+        if (lastHdrPosition >= 0 && lastHdrPosition != position) {
+            adapter.releaseHdrForPosition(getSsivAt(lastHdrPosition), lastHdrPosition);
+        }
+        lastHdrPosition = position;
+        adapter.loadHdrForPosition(getSsivAt(position), position);
+        // In compare mode the shared window is driven by either pane's HDR
+        // readiness (via the listener) and cleared on pause, so no pane can
+        // stomp the other's window state.
+        if (!isCompareMode() && getActivity() != null) {
+            UltraHdrGalleryUtil.setWindowHdr(getActivity(), adapter.isHdrActive(position));
+        }
+    }
+
+    @Override
+    public void onHdrStateChanged(int position, boolean isHdr) {
+        if (getActivity() != null && viewPager != null && position == viewPager.getCurrentItem()) {
+            UltraHdrGalleryUtil.setWindowHdr(getActivity(), isHdr);
+            updateHdrToggleUi(adapter != null && adapter.isHdrAvailable(position), isHdr);
+        }
+    }
+
+    /**
+     * Tapping the active UltraHDR indicator releases the full-resolution HDR
+     * bitmap, restores the tiled SDR source, and returns the activity window to
+     * its default color mode. HDR is loaded again only after changing pages or
+     * leaving and returning to the viewer. Tapping the disabled indicator loads
+     * the gainmap-backed rendition again.
+     */
+    private void onHdrToggleClicked(View view) {
+        if (adapter == null || viewPager == null) {
+            return;
+        }
+        int position = viewPager.getCurrentItem();
+        if (!adapter.isHdrAvailable(position)) {
+            return;
+        }
+        if (adapter.isHdrActive(position)) {
+            adapter.releaseHdrForPosition(getSsivAt(position), position);
+            UltraHdrGalleryUtil.setWindowHdr(getActivity(), false);
+            updateHdrToggleUi(true, false);
+        } else {
+            adapter.loadHdrForPosition(getSsivAt(position), position);
+        }
+    }
+
+    @Override
+    public void onHdrAvailabilityChanged(int position, boolean isUltraHdr) {
+        if (viewPager != null && position == viewPager.getCurrentItem()) {
+            boolean isHdr = adapter != null && adapter.isHdrActive(position);
+            updateHdrToggleUi(isUltraHdr, isHdr);
+        }
+    }
+
+    private void updateHdrToggleUi(boolean isUltraHdr, boolean isHdr) {
+        if (fragmentGalleryImageViewerBinding == null) {
+            return;
+        }
+        if (!isUltraHdr) {
+            fragmentGalleryImageViewerBinding.hdrToggleText.setVisibility(View.GONE);
+            return;
+        }
+        fragmentGalleryImageViewerBinding.hdrToggleText.setVisibility(View.VISIBLE);
+        fragmentGalleryImageViewerBinding.hdrToggleText.setImageResource(
+                isHdr ? R.drawable.ic_ultra_hdr : R.drawable.ic_ultra_hdr_off);
     }
 
     public void setSsivListener(SSIVListener ssivListener) {
@@ -217,7 +321,14 @@ public class ImageViewerFragment extends Fragment {
     }
 
     public CustomSSIV getCurrentSSIV() {
-        return viewPager.findViewById(adapter.getSsivId(viewPager.getCurrentItem()));
+        return getSsivAt(viewPager.getCurrentItem());
+    }
+
+    private CustomSSIV getSsivAt(int position) {
+        if (adapter == null || viewPager == null) {
+            return null;
+        }
+        return viewPager.findViewById(adapter.getSsivId(position));
     }
 
     private void onBack(View view) {
