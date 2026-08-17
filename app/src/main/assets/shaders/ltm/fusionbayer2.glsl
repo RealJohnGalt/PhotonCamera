@@ -10,7 +10,10 @@ uniform sampler2D normalExpo;
 uniform sampler2D normalExpoDiff;
 
 uniform int level;
-uniform ivec2 upscaleIn;
+// Reciprocal of the output dimensions, computed on the CPU as 1.0/size.
+// Multiplying by the precomputed reciprocal keeps full precision and avoids
+// the (slower, less precise) per-fragment GPU division.
+uniform vec2 upscaleIn;
 uniform float gauss;
 uniform float target;
 //#define TARGET 0.0
@@ -21,18 +24,28 @@ out float result;
 #import gaussian
 #import interpolation
 float laplace(sampler2D tex, float mid, ivec2 xyCenter) {
-    float left = texelFetch(tex, xyCenter - ivec2(1, 0), 0).r,
-    right = texelFetch(tex, xyCenter + ivec2(1, 0), 0).r,
-    top = texelFetch(tex, xyCenter - ivec2(0, 1), 0).r,
-    bottom = texelFetch(tex, xyCenter + ivec2(0, 1), 0).r;
+    ivec2 size = textureSize(tex, 0);
+    ivec2 leftPos = clamp(xyCenter - ivec2(1, 0), ivec2(0), size - ivec2(1));
+    ivec2 rightPos = clamp(xyCenter + ivec2(1, 0), ivec2(0), size - ivec2(1));
+    ivec2 topPos = clamp(xyCenter - ivec2(0, 1), ivec2(0), size - ivec2(1));
+    ivec2 bottomPos = clamp(xyCenter + ivec2(0, 1), ivec2(0), size - ivec2(1));
+    float left = texelFetch(tex, leftPos, 0).r,
+    right = texelFetch(tex, rightPos, 0).r,
+    top = texelFetch(tex, topPos, 0).r,
+    bottom = texelFetch(tex, bottomPos, 0).r;
 
     return distance(4. * mid, (left + right + top + bottom)*NORM);
 }
 float laplace2(sampler2D tex, float mid, ivec2 xyCenter) {
-    float left = texelFetch(tex, xyCenter - ivec2(1, 0), 0).b,
-    right = texelFetch(tex, xyCenter + ivec2(1, 0), 0).b,
-    top = texelFetch(tex, xyCenter - ivec2(0, 1), 0).b,
-    bottom = texelFetch(tex, xyCenter + ivec2(0, 1), 0).b;
+    ivec2 size = textureSize(tex, 0);
+    ivec2 leftPos = clamp(xyCenter - ivec2(1, 0), ivec2(0), size - ivec2(1));
+    ivec2 rightPos = clamp(xyCenter + ivec2(1, 0), ivec2(0), size - ivec2(1));
+    ivec2 topPos = clamp(xyCenter - ivec2(0, 1), ivec2(0), size - ivec2(1));
+    ivec2 bottomPos = clamp(xyCenter + ivec2(0, 1), ivec2(0), size - ivec2(1));
+    float left = texelFetch(tex, leftPos, 0).b,
+    right = texelFetch(tex, rightPos, 0).b,
+    top = texelFetch(tex, topPos, 0).b,
+    bottom = texelFetch(tex, bottomPos, 0).b;
 
     return distance(4. * mid, (left + right + top + bottom)*NORM);
 }
@@ -44,7 +57,8 @@ void main() {
     //if(useUpsampled == 2) mpy = 2.0;
     float base = (useUpsampled)
     //? texelFetch(upsampled, xyCenter, 0).xyz
-    ? textureBicubicHardware(upsampled, (vec2(gl_FragCoord.xy))/(vec2(upscaleIn))).r
+    ? textureBicubicHardware(upsampled,
+            vec2(gl_FragCoord.xy) * upscaleIn).r
     : float(0.0);
     // How are we going to blend these two?
     vec2 normal = texelFetch(normalExpoDiff, xyCenter, 0).rg;

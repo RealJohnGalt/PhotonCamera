@@ -71,9 +71,15 @@ void main() {
         L = min(L, 2.3);
     }
     L = clamp(L, GAIN_CLAMP_MIN, GAIN_CLAMP_MAX);
-    if (L < GAIN_DEADBAND) {
-        L = 0.0;
-    }
+    // Smooth deadband instead of a binary cutoff: fade the gain out gradually
+    // below GAIN_DEADBAND so shadow gradients do not step from zero to a
+    // positive gain. Shadows/neutrals never darken (min boost stays 1.0).
+    L *= smoothstep(0.0, GAIN_DEADBAND, L);
+    // Soft roll-off with the SDR luminance: in near-black pixels the alpha
+    // noise floor exceeds sdrLin and would otherwise be amplified, producing
+    // "rolling from black to brighter shadows" banding. Ramp gain to zero
+    // smoothly as the base rolls out of black.
+    L *= smoothstep(0.0, 0.02, sdrLin);
     if (GAIN_SCALE > 0.0) {
         Output = vec4(clamp((L - GAIN_MIN) * GAIN_SCALE, 0.0, 255.0), 0.0, 0.0, 0.0);
     } else {

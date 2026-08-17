@@ -542,7 +542,7 @@ public class ExposureFusionBayer3 extends Node {
         //glProg.setTexture("highExpo",highExpo.gauss[ind]);
         glProg.setTexture("normalExpoDiff",normalExpo.gauss[ind]);
         //glProg.setTexture("highExpoDiff",highExpo.gauss[ind]);
-        glProg.setVar("upscaleIn",binnedFuse.mSize);
+        glProg.setVar("upscaleIn",1.0f/binnedFuse.mSize.x,1.0f/binnedFuse.mSize.y);
         glProg.setVar("blendMpy",1.f);
 
         glProg.drawBlocks(binnedFuse,normalExpo.sizes[ind]);
@@ -560,7 +560,7 @@ public class ExposureFusionBayer3 extends Node {
             glProg.setVar("useUpsampled", 1);
             glProg.setVar("blendMpy",1.0f+dehazing-dehazing*((float)i)/(normalExpo.laplace.length-1.f));
             glProg.setVar("level",i);
-            glProg.setVar("upscaleIn",normalExpo.sizes[i]);
+            glProg.setVar("upscaleIn",1.0f/normalExpo.sizes[i].x, 1.0f/normalExpo.sizes[i].y);
             glProg.setVar("gauss", gaussSize);
             glProg.setVar("target", targetLuma);
             // We can discard the previous work in progress merge.

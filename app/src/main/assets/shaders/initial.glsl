@@ -403,7 +403,6 @@ vec3 applyColorSpace(vec3 pRGB, float tonemapGain, float gainsVal, out float lin
     }
     #endif
     pRGB = corr*sensorToIntermediate*(pRGB*neutralPoint);
-    linearLum = luminocity(pRGB);
     vec3 pHSV = rgb2hsl(pRGB);
     #if USE_HSV == 1
 
@@ -422,7 +421,13 @@ vec3 applyColorSpace(vec3 pRGB, float tonemapGain, float gainsVal, out float lin
     float vignetteFactor = (br*br/(br*br+noise*noise))*VIGNETTE;
     gainsVal = mix(float(1.0), gainsVal, 1.0);
     //br = clamp(reinhard_extended(br*gainsVal,max(1.0,gainsVal)),0.0,1.0);
-    pRGB = clamp(pRGB*mix(tonemapGain,1.0,LTMMIX), 0.0,1.0);
+    vec3 pRGBBoosted = pRGB*mix(tonemapGain,1.0,LTMMIX);
+    // The alpha channel carries the HDR luminance the gain map can recover:
+    // the linear luminance AFTER the LTM boost but BEFORE the SDR clamp, so
+    // highlights lifted by tonemapGain keep a positive log2 ratio versus the
+    // clamped base. Capped at 16.0 (MAX_CONTENT_BOOST) to bound gain stats.
+    linearLum = min(luminocity(pRGBBoosted), 16.0);
+    pRGB = clamp(pRGBBoosted, 0.0, 1.0);
     //pRGB = clamp(reinhard_extended(pRGB*tonemapGain,max(1.0,tonemapGain)),vec3(0.0),vec3(1.0));
 
     pRGB = clamp(reinhard_extended(pRGB*gainsVal,max(1.0,gainsVal)),vec3(0.0),vec3(1.0));
@@ -558,8 +563,45 @@ void main() {
     // Handle zero variance case with epsilon for stability
     float a = covXY / (max(varX, 0.0) + 0.0001);
     float b = meanY - a * meanX;*/
-    vec2 gainAB = texture(FusionMap, vec2(gl_FragCoord.xy)/vec2(textureSize(InputBuffer, 0))).rg * FUSIONGAIN;
-    tonemapGain =  gainAB.r * ((luminocity(sRGB))) + gainAB.g;
+    // Edge-aware guided refinement: re-fit the affine model at full resolution
+    // using the full-res luma as the guide. The FusionMap carries the bounded
+    // gain ratio; getGain() bilinearly upsamples it, and re-fitting the linear
+    // model in a small Gaussian window against the local luma keeps the gain
+    // consistent with the edge structure instead of smearing it across edges.
+    float momentX = 0.0, momentY = 0.0, momentX2 = 0.0, momentXY = 0.0;
+    float ws = 0.0;
+    const float sigma = 1.2;
+    const float sigmaSq2 = 2.0 * sigma * sigma;
+    for (int i = -1; i <= 1; i++) {
+        for (int j = -1; j <= 1; j++) {
+            // Average lightness over a 2x2 block to match the FusionMap scale.
+            vec2 offset = vec2(float(i*2), float(j*2));
+            float lightness = 0.0;
+            lightness += luminocity(texelFetch(InputBuffer, xy + ivec2(i*2, j*2), 0).rgb);
+            lightness += luminocity(texelFetch(InputBuffer, xy + ivec2(i*2+1, j*2), 0).rgb);
+            lightness += luminocity(texelFetch(InputBuffer, xy + ivec2(i*2, j*2+1), 0).rgb);
+            lightness += luminocity(texelFetch(InputBuffer, xy + ivec2(i*2+1, j*2+1), 0).rgb);
+            lightness *= 0.25;
+            float gain = getGain(offset);
+            // Gaussian weight based on spatial distance
+            float w = exp(-float(i*i + j*j) / sigmaSq2);
+            momentX += lightness * w;
+            momentY += gain * w;
+            momentX2 += lightness * lightness * w;
+            momentXY += lightness * gain * w;
+            ws += w;
+        }
+    }
+    float invWs = 1.0 / ws;
+    float meanX = momentX * invWs;
+    float meanY = momentY * invWs;
+    float covXY = momentXY * invWs - meanX * meanY;
+    float varX = momentX2 * invWs - meanX * meanX;
+    // Handle zero variance case with epsilon for stability
+    float a = covXY / (max(varX, 0.0) + 0.0001);
+    float b = meanY - a * meanX;
+    tonemapGain = a * luminocity(sRGB) + b;
+    tonemapGain = clamp(tonemapGain, 0.25, 8.0);
     //tonemapGain = mix(1.0,tonemapGain,texture(IntenseCurve, vec2(dot(sRGB.rgb,vec3(1.0/3.0)),0.0)).r);
     //tonemapGain = max(tonemapGain, 0.5);
     #endif

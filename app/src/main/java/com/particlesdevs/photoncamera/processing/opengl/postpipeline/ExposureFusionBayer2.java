@@ -425,7 +425,14 @@ public class ExposureFusionBayer2 extends Node {
 
 
         SplineInterpolator splineInterpolator = SplineInterpolator.createMonotoneCubicSpline(curveX,curveY);
-        SplineInterpolator splineInterpolatorShadows = SplineInterpolator.createMonotoneCubicSpline(curveX,curveY);
+        ArrayList<Float> shadowX = new ArrayList<>();
+        ArrayList<Float> shadowY = new ArrayList<>();
+        for (int i = 0; i < curvePointsCount; i++) {
+            shadowX.add(shadowCurveX[i]);
+            shadowY.add(shadowCurveY[i]);
+        }
+        SplineInterpolator splineInterpolatorShadows =
+                SplineInterpolator.createMonotoneCubicSpline(shadowX, shadowY);
         float[] interpolatedCurveArr = new float[1024];
         float[] interpolatedCurveShadowsArr = new float[1024];
         for(int i =0 ;i<interpolatedCurveArr.length;i++){
@@ -475,7 +482,9 @@ public class ExposureFusionBayer2 extends Node {
 
         //overexposure*=overExposeMpy;
         overexposure = Math2.mix(1.f,overexposure,overExposeMpy);
+        overexposure = Math2.mix(1.f, overexposure, overExposeMaxFusion);
         underexposure*=underExposeMpy;
+        underexposure = Math2.mix(underexposure, 1.f, underExposeMinFusion);
         overexposure = Math.min(fusionExpoHighLimit,overexposure);
         underexposure = Math.max(fusionExpoLowLimit,underexposure);
 
