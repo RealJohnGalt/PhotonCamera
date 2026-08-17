@@ -461,6 +461,10 @@ float getLm(ivec2 coordsShift){
     return inrgb.r+inrgb.g+inrgb.b;
 }
 
+ivec2 clampInputPos(ivec2 pos, ivec2 inputSize) {
+    return clamp(pos, ivec2(0), inputSize - ivec2(1));
+}
+
 float convSin(float x){
     return 0.5 + 0.5*sin((2.0*x-1.0) * PI/2.0);
 }
@@ -572,15 +576,16 @@ void main() {
     float ws = 0.0;
     const float sigma = 1.2;
     const float sigmaSq2 = 2.0 * sigma * sigma;
+    ivec2 inputSize = textureSize(InputBuffer, 0);
     for (int i = -1; i <= 1; i++) {
         for (int j = -1; j <= 1; j++) {
             // Average lightness over a 2x2 block to match the FusionMap scale.
             vec2 offset = vec2(float(i*2), float(j*2));
             float lightness = 0.0;
-            lightness += luminocity(texelFetch(InputBuffer, xy + ivec2(i*2, j*2), 0).rgb);
-            lightness += luminocity(texelFetch(InputBuffer, xy + ivec2(i*2+1, j*2), 0).rgb);
-            lightness += luminocity(texelFetch(InputBuffer, xy + ivec2(i*2, j*2+1), 0).rgb);
-            lightness += luminocity(texelFetch(InputBuffer, xy + ivec2(i*2+1, j*2+1), 0).rgb);
+            lightness += luminocity(texelFetch(InputBuffer, clampInputPos(xy + ivec2(i*2, j*2), inputSize), 0).rgb);
+            lightness += luminocity(texelFetch(InputBuffer, clampInputPos(xy + ivec2(i*2+1, j*2), inputSize), 0).rgb);
+            lightness += luminocity(texelFetch(InputBuffer, clampInputPos(xy + ivec2(i*2, j*2+1), inputSize), 0).rgb);
+            lightness += luminocity(texelFetch(InputBuffer, clampInputPos(xy + ivec2(i*2+1, j*2+1), inputSize), 0).rgb);
             lightness *= 0.25;
             float gain = getGain(offset);
             // Gaussian weight based on spatial distance

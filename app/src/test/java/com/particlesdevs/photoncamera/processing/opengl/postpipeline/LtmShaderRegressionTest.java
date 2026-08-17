@@ -91,6 +91,8 @@ public class LtmShaderRegressionTest {
         // fit coefficients) so getGain() returns a real gain.
         assertTrue(fusionMap.contains("float lowresVal  = clamp("));
         assertTrue(fusionMap.contains(", 0.0, 8.0)"));
+        assertTrue(fusionMap.contains("float ratioConfidence = smoothstep(0.001, 0.01, baseValue)"));
+        assertTrue(fusionMap.contains("mix(1.0, ratio, ratioConfidence)"));
         assertTrue(fusionMap.contains("result = vec2(lowresVal / FUSIONGAIN, 0.0)"));
         assertFalse(fusionMap.contains("result = vec2(a,b)"));
         assertTrue(shader.contains("float gain = getGain(offset)"));
@@ -100,6 +102,7 @@ public class LtmShaderRegressionTest {
 
     @Test
     public void fusionLaplacianClampsBorderFetches() throws IOException {
+        String initial = asset("shaders/initial.glsl");
         String bayer2 = asset("shaders/ltm/fusionbayer2.glsl");
         String bayer3 = asset("shaders/ltm/fusionbayer3.glsl");
         String bayer = asset("shaders/ltm/fusionbayer.glsl");
@@ -110,6 +113,52 @@ public class LtmShaderRegressionTest {
         assertTrue(bayer3.contains("clamp(xyCenter + ivec2(i, j)"));
         assertTrue(bayer.contains("clamp(xyCenter + ivec2(0, 1)"));
         assertTrue(fusionMap.contains("ivec2 safePos = clamp(xy"));
+        assertTrue(initial.contains("ivec2 clampInputPos(ivec2 pos, ivec2 inputSize)"));
+        assertTrue(initial.contains("clampInputPos(xy + ivec2(i*2+1, j*2+1), inputSize)"));
+    }
+
+    @Test
+    public void autoExposureAndGainMapHandleExtremeInputs() throws IOException {
+        String autoExposure = source(
+                "com/particlesdevs/photoncamera/processing/opengl/postpipeline/AutoExposure.java");
+        String apply = asset("shaders/autoexposure/apply.glsl");
+
+        assertTrue(autoExposure.contains("cnt <= 0 || !Float.isFinite(sum) || sum <= 0.0f"));
+        assertTrue(autoExposure.contains("!Float.isFinite(mpy) || mpy <= 0.0f"));
+        assertTrue(autoExposure.contains("!Float.isFinite(normR) || normR <= 0.0f"));
+        assertTrue(apply.contains("Output.a = inp.a"));
+        assertFalse(apply.contains("Output.a = min(inp.a * max(mpy, 0.0), 16.0)"));
+    }
+
+    @Test
+    public void pipelineResetsRunStateAndCleansUpFailures() throws IOException {
+        String pipeline = source(
+                "com/particlesdevs/photoncamera/processing/opengl/postpipeline/PostPipeline.java");
+        String gainMap = source(
+                "com/particlesdevs/photoncamera/processing/opengl/postpipeline/GainMapGenerator.java");
+
+        assertTrue(pipeline.contains("totalGain = 1.0f"));
+        assertTrue(pipeline.contains("finally {"));
+        assertTrue(pipeline.contains("GLTexture.closeAll()"));
+        assertTrue(gainMap.contains("outBitmap.recycle()"));
+    }
+
+    @Test
+    public void textureTrackingUsesSlotsAndIsIdempotent() throws IOException {
+        String texture = source(
+                "com/particlesdevs/photoncamera/processing/opengl/GLTexture.java");
+        String fusion2 = source(
+                "com/particlesdevs/photoncamera/processing/opengl/postpipeline/ExposureFusionBayer2.java");
+        String fusion3 = source(
+                "com/particlesdevs/photoncamera/processing/opengl/postpipeline/ExposureFusionBayer3.java");
+
+        assertTrue(texture.contains("private static GLTexture[] owners"));
+        assertTrue(texture.contains("private int trackingSlot = -1"));
+        assertTrue(texture.contains("if (closed)"));
+        assertTrue(fusion2.contains("normalExpo.gauss[i].close()"));
+        assertFalse(fusion2.contains("normalExpo.gauss[ind].close();\n        //highExpo.gauss[ind]"));
+        assertTrue(fusion3.contains("normalExpo.gauss[i].close()"));
+        assertFalse(fusion3.contains("normalExpo.gauss[ind].close();\n        //highExpo.gauss[ind]"));
     }
 
     @Test

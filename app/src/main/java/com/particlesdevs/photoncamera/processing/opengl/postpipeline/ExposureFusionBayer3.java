@@ -586,7 +586,6 @@ public class ExposureFusionBayer3 extends Node {
 
         }
         //previousNode.WorkingTexture.close();
-        normalExpo.gauss[ind].close();
         //highExpo.gauss[ind].close();
         basePipeline.main1.mSize.x = initialSize.x;
         basePipeline.main1.mSize.y = initialSize.y;

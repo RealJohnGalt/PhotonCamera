@@ -105,6 +105,7 @@ public class PostPipeline extends GLBasePipeline {
         gainMapMaxBoost = 0.0f;
         gainMapMinBoost = 1.0f;
         gainMapResult = null;
+        totalGain = 1.0f;
         if (PreferenceKeys.isUltraHdrOn()) {
             Log.d("PostPipeline", "UltraHDR enabled=" + ultraHdrEnabled + " sdk="
                     + Build.VERSION.SDK_INT);
@@ -156,13 +157,24 @@ public class PostPipeline extends GLBasePipeline {
         // Inject tunable values for PostPipeline (since it doesn't extend Node)
         com.particlesdevs.photoncamera.settings.TunableInjector.inject(this);
         
-        BuildDefaultPipeline();
-        GLImage resImg = runAll();
-        Bitmap res = resImg.getBufferedImage();
-        Allocator.free(resImg.byteBuffer);
-        buildGainMapResult();
-        GLTexture.closeAll();
-        return res;
+        try {
+            BuildDefaultPipeline();
+            GLImage resImg = runAll();
+            Bitmap res;
+            try {
+                res = resImg.getBufferedImage();
+            } finally {
+                Allocator.free(resImg.byteBuffer);
+            }
+            buildGainMapResult();
+            return res;
+        } finally {
+            if (gainMapBitmap != null) {
+                gainMapBitmap.recycle();
+                gainMapBitmap = null;
+            }
+            GLTexture.closeAll();
+        }
     }
 
     private void buildGainMapResult() {

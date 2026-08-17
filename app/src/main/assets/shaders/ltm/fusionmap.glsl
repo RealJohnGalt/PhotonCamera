@@ -27,9 +27,14 @@ void main() {
     // base->0 and the raw quotient explodes; the full-resolution guided filter
     // in initial.glsl re-fits a local linear model against the luma guide, so
     // the map only needs to carry the bounded gain, not affine coefficients.
-    float lowresVal  = clamp(
-            (texelFetch(InputBuffer, safePos, 0).r + 0.001) /
-            (texelFetch(BrBuffer, safePos, 0).r + 0.001), 0.0, 8.0);
+    float fusedValue = max(texelFetch(InputBuffer, safePos, 0).r, 0.0);
+    float baseValue = max(texelFetch(BrBuffer, safePos, 0).r, 0.0);
+    float ratio = fusedValue / max(baseValue, 0.0001);
+    // The ratio is not reliable when the base is near black. Return the
+    // neutral gain there and transition smoothly into the measured ratio as
+    // the denominator becomes informative, avoiding additive-offset bias.
+    float ratioConfidence = smoothstep(0.001, 0.01, baseValue);
+    float lowresVal  = clamp(mix(1.0, ratio, ratioConfidence), 0.0, 8.0);
     // /FUSIONGAIN so getGain()'s *FUSIONGAIN recovers the true gain; *factor
     // preserves the exposure-correction scaling of the legacy coefficient path.
     result = vec2(lowresVal / FUSIONGAIN, 0.0);

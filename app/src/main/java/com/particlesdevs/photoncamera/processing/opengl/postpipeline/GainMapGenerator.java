@@ -62,6 +62,7 @@ public class GainMapGenerator extends Node {
             return;
         }
         String stage = "size check";
+        Bitmap outBitmap = null;
         try {
             Point inSize = previousNode.WorkingTexture.mSize;
             Point cropSize = pipeline.cropSize;
@@ -92,7 +93,7 @@ public class GainMapGenerator extends Node {
             }
             int mirror = pipeline.mParameters.mirror ? 1 : 0;
 
-            Bitmap outBitmap = Bitmap.createBitmap(outSize.x, outSize.y, Bitmap.Config.ARGB_8888);
+            outBitmap = Bitmap.createBitmap(outSize.x, outSize.y, Bitmap.Config.ARGB_8888);
             stage = "program bind";
             glProg.useAssetProgram("ultrahdr/gainmap");
             glProg.setTexture("InputBuffer", previousNode.WorkingTexture);
@@ -194,6 +195,11 @@ public class GainMapGenerator extends Node {
         } catch (Exception e) {
             Log.e(Name, "UltraHDR gain map generation failed at " + stage + ": "
                     + Log.getStackTraceString(e));
+            if (pipeline.gainMapBitmap != null) {
+                pipeline.gainMapBitmap.recycle();
+            } else if (outBitmap != null) {
+                outBitmap.recycle();
+            }
             pipeline.gainMapBitmap = null;
             pipeline.gainMapSize = null;
             pipeline.gainMapMaxBoost = 0.0f;
