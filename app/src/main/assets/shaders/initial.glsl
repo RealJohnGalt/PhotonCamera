@@ -635,15 +635,14 @@ void main() {
     // into the sky. The global limits remain a final safety bound.
     tonemapGain = clamp(tonemapGain, localMinGain, localMaxGain);
     // Positive fusion gain is highlight recovery, not a general sky/midtone
-    // lift. Gate boosts by proximity to the local bright tail: only pixels
-    // within the top ~15% of the local maximum lightness keep gain above 1, so
-    // the source itself is recovered but the dimmer halo ring around it stays
-    // neutral instead of inheriting the source's gain.
+    // lift. Two independent masks gate it: the halo ring (a pixel notably dimmer
+    // than the local bright tail must not inherit the source's gain) and deep
+    // shadows (low-SNR fusion ratio must not be boosted). Flat midtones keep the
+    // full fusion gain so the LTM output stays as bright as the original SDR.
     float brightTail = max(localMaxLightness, centerLightness);
-    // The absolute 0.45 floor keeps flat shadow regions neutral (they must not
-    // inherit fusion gain), while the brightTail-relative ramp suppresses the
-    // dimmer halo ring around an actual bright source.
-    float highlightMask = smoothstep(max(0.45, brightTail * 0.85), max(brightTail, 1e-4), centerLightness);
+    float haloGate = smoothstep(brightTail * 0.85, max(brightTail, 1e-4), centerLightness);
+    float shadowFloor = smoothstep(0.2, 0.35, centerLightness);
+    float highlightMask = haloGate * shadowFloor;
     tonemapGain = mix(min(tonemapGain, 1.0), tonemapGain, highlightMask);
     tonemapGain = clamp(tonemapGain, 0.25, 8.0);
     //tonemapGain = mix(1.0,tonemapGain,texture(IntenseCurve, vec2(dot(sRGB.rgb,vec3(1.0/3.0)),0.0)).r);
