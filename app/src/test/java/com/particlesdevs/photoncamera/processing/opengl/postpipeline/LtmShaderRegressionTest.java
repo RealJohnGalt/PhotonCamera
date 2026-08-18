@@ -118,7 +118,7 @@ public class LtmShaderRegressionTest {
         assertTrue(shader.contains("float shadowFloor = smoothstep(0.2, 0.35, centerLightness)"));
         assertTrue(shader.contains("float highlightMask = haloGate * shadowFloor"));
         assertFalse(shader.contains("smoothstep(max(0.45, brightTail * 0.85), max(brightTail, 1e-4), centerLightness)"));
-        assertTrue(shader.contains("mix(min(tonemapGain, 1.0), tonemapGain, highlightMask)"));
+        assertTrue(shader.contains("mix(min(tonemapGain, FUSIONGAIN), tonemapGain, highlightMask)"));
         assertTrue(shader.contains("float guideConfidence = guideVariance / (guideVariance + varianceRegularizer)"));
         assertTrue(shader.contains("float guidedGain = a * luminocity(sRGB) + b"));
         assertTrue(shader.contains("tonemapGain = clamp(tonemapGain, 0.25, FUSIONCAP)"));

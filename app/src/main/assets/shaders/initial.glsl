@@ -656,7 +656,7 @@ void main() {
     float haloGate = smoothstep(brightTail * 0.85, max(brightTail, 1e-4), centerLightness);
     float shadowFloor = smoothstep(0.2, 0.35, centerLightness);
     float highlightMask = haloGate * shadowFloor;
-    tonemapGain = mix(min(tonemapGain, 1.0), tonemapGain, highlightMask);
+    tonemapGain = mix(min(tonemapGain, FUSIONGAIN), tonemapGain, highlightMask);
     // Restore the deep, punchy character the uniform gain reduction used to
     // give without the exposure drop: deepen shadow/midtone gains below the
     // luma anchor, leave everything at/above the anchor untouched, so the
