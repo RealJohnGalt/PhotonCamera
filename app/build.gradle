@@ -39,7 +39,7 @@ android {
 
     defaultConfig {
         compileSdk 36
-        applicationId 'com.particlesdevs.photoncamera'
+        applicationId 'com.particlesdevs.photoncamera2'
         minSdkVersion 26
         targetSdkVersion 35
         versionCode versionBuild
