@@ -140,6 +140,20 @@ public class LtmShaderRegressionTest {
     }
 
     @Test
+    public void fusionDetailIsRangeClampedToBaseNeighborhood() throws IOException {
+        String shader = asset("shaders/ltm/fusionbayer3.glsl");
+
+        // The pyramid reconstruction must clip Laplacian overshoot to the local
+        // base range; otherwise a bright source produces bright/dark halo rings.
+        assertTrue(shader.contains("vec2 upCoord = vec2(gl_FragCoord.xy) * upscaleIn"));
+        assertTrue(shader.contains("vec2 texSize = vec2(textureSize(upsampled, 0))"));
+        assertTrue(shader.contains("resultVal = clamp(resultVal, lo, hi)"));
+        assertTrue(shader.contains("float lo = min(base, min(min(texture(upsampled, n0).r, texture(upsampled, n1).r)"));
+        assertTrue(shader.contains("float hi = max(base, max(max(texture(upsampled, n0).r, texture(upsampled, n1).r)"));
+        assertFalse(shader.contains("result = base + detail * blendMpy"));
+    }
+
+    @Test
     public void autoExposureAndGainMapHandleExtremeInputs() throws IOException {
         String autoExposure = source(
                 "com/particlesdevs/photoncamera/processing/opengl/postpipeline/AutoExposure.java");
