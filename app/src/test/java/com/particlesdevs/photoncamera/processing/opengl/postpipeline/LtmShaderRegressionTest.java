@@ -55,12 +55,17 @@ public class LtmShaderRegressionTest {
         for (String shader : new String[]{shader3, shader2}) {
             assertTrue(shader.contains("uniform vec2 upscaleIn"));
             assertTrue(shader.contains("vec2(gl_FragCoord.xy) * upscaleIn"));
+            assertFalse(shader.contains("textureBicubicHardware(upsampled"));
             assertFalse(shader.contains("ivec2 targetSize"));
             assertFalse(shader.contains("/ vec2(targetSize)"));
         }
         for (String java : new String[]{java2, java3}) {
             assertTrue(java.contains("setVar(\"upscaleIn\",1.0f/binnedFuse.mSize.x,1.0f/binnedFuse.mSize.y)"));
             assertTrue(java.contains("setVar(\"upscaleIn\",1.0f/normalExpo.sizes[i].x, 1.0f/normalExpo.sizes[i].y)"));
+            // The dehazing detail boost stays on the finest levels (i=0 -> 1+dehazing),
+            // matching the original formula; flipping it to the coarsest level amplified
+            // low-frequency detail in flat shadows and caused banding.
+            assertTrue(java.contains("1.0f+dehazing-dehazing*((float)i)/(normalExpo.laplace.length-1.f)"));
         }
     }
 
@@ -68,6 +73,8 @@ public class LtmShaderRegressionTest {
     public void ultraHdrAlphaCarriesFusedLuminance() throws IOException {
         String shader = asset("shaders/initial.glsl");
         String gainMap = asset("shaders/ultrahdr/gainmap.glsl");
+        String gainMapGenerator = source(
+                "com/particlesdevs/photoncamera/processing/opengl/postpipeline/GainMapGenerator.java");
 
         // The alpha must carry the luminance AFTER the LTM boost but BEFORE the
         // SDR clamp so the gain map recovers lifted highlights instead of
@@ -78,6 +85,9 @@ public class LtmShaderRegressionTest {
         // and must not amplify the alpha noise floor in near-black pixels.
         assertTrue(gainMap.contains("smoothstep(0.0, GAIN_DEADBAND, L)"));
         assertTrue(gainMap.contains("smoothstep(0.0, 0.02, sdrLin)"));
+        assertTrue(gainMap.contains("encoded / 255.0"));
+        assertTrue(gainMap.contains("float hashDither(ivec2 p)"));
+        assertTrue(gainMapGenerator.contains("setVar(\"CROP_Y\", inSize.y - cropH)"));
     }
 
     @Test
@@ -95,8 +105,18 @@ public class LtmShaderRegressionTest {
         assertTrue(fusionMap.contains("mix(1.0, ratio, ratioConfidence)"));
         assertTrue(fusionMap.contains("result = vec2(lowresVal / FUSIONGAIN, 0.0)"));
         assertFalse(fusionMap.contains("result = vec2(a,b)"));
-        assertTrue(shader.contains("float gain = getGain(offset)"));
-        assertTrue(shader.contains("tonemapGain = a * luminocity(sRGB) + b"));
+        assertTrue(shader.contains("float gain = getGain(xy, offset)"));
+        assertTrue(shader.contains("float rangeWeight = exp("));
+        assertTrue(shader.contains("const float lumaSigma = 0.08"));
+        assertTrue(shader.contains("float envelopeGain = mix(centerGain, gain, rangeWeight)"));
+        assertTrue(shader.contains("tonemapGain = clamp(tonemapGain, localMinGain, localMaxGain)"));
+        assertTrue(shader.contains("float localMaxLightness = centerLightness"));
+        assertTrue(shader.contains("localMaxLightness = max(localMaxLightness, lightness)"));
+        assertTrue(shader.contains("float highlightMask = smoothstep(max(0.45, brightTail * 0.85), max(brightTail, 1e-4), centerLightness)"));
+        assertFalse(shader.contains("float highlightMask = smoothstep(brightTail * 0.85, max(brightTail, 1e-4), centerLightness)"));
+        assertTrue(shader.contains("mix(min(tonemapGain, 1.0), tonemapGain, highlightMask)"));
+        assertTrue(shader.contains("float guideConfidence = guideVariance / (guideVariance + varianceRegularizer)"));
+        assertTrue(shader.contains("float guidedGain = a * luminocity(sRGB) + b"));
         assertTrue(shader.contains("tonemapGain = clamp(tonemapGain, 0.25, 8.0)"));
     }
 

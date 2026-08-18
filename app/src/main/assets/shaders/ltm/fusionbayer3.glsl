@@ -43,7 +43,7 @@ void main() {
     ivec2 xyCenter = ivec2(gl_FragCoord.xy);
     // If this is the lowest layer, start with zero.
     float base = (useUpsampled)
-    ? textureBicubicHardware(upsampled,
+    ? texture(upsampled,
             vec2(gl_FragCoord.xy) * upscaleIn).r
     : float(0.0);
 

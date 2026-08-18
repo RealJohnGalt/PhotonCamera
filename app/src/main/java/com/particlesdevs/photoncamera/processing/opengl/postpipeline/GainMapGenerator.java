@@ -105,6 +105,7 @@ public class GainMapGenerator extends Node {
             glProg.setVar("MIRROR", mirror);
             glProg.setVar("RAW_SIZE", inSize.x, inSize.y);
             glProg.setVar("CROP_H", cropH);
+            glProg.setVar("CROP_Y", inSize.y - cropH);
 
             // Pass 1: gain statistics across all blocks.
             stage = "stats";

@@ -57,7 +57,7 @@ void main() {
     //if(useUpsampled == 2) mpy = 2.0;
     float base = (useUpsampled)
     //? texelFetch(upsampled, xyCenter, 0).xyz
-    ? textureBicubicHardware(upsampled,
+    ? texture(upsampled,
             vec2(gl_FragCoord.xy) * upscaleIn).r
     : float(0.0);
     // How are we going to blend these two?

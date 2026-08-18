@@ -445,10 +445,12 @@ vec3 applyColorSpace(vec3 pRGB, float tonemapGain, float gainsVal, out float lin
     return pRGB;
 }
 
-float getGain(vec2 coordsShift){
+float getGain(ivec2 centerPos, vec2 coordsShift){
     vec2 fusionSize = vec2(textureSize(FusionMap, 0));
     vec2 inputSize = vec2(textureSize(InputBuffer, 0));
-    vec2 baseCoord = (gl_FragCoord.xy + coordsShift) / inputSize;
+    // Use the same mirrored/cropped coordinate as the guide image. Sampling
+    // from raw gl_FragCoord here misregisters gain edges after transforms.
+    vec2 baseCoord = (vec2(centerPos) + vec2(0.5) + coordsShift) / inputSize;
     float ingain = texture(FusionMap, baseCoord).r;
     //float ingain = texelFetch(FusionMap, xy, 0).r;
     /*if(ingain > 0.0){
@@ -574,9 +576,18 @@ void main() {
     // consistent with the edge structure instead of smearing it across edges.
     float momentX = 0.0, momentY = 0.0, momentX2 = 0.0, momentXY = 0.0;
     float ws = 0.0;
+    float localMinGain = 8.0;
+    float localMaxGain = 0.25;
     const float sigma = 1.2;
     const float sigmaSq2 = 2.0 * sigma * sigma;
+    const float lumaSigma = 0.08;
+    const float lumaSigmaSq2 = 2.0 * lumaSigma * lumaSigma;
     ivec2 inputSize = textureSize(InputBuffer, 0);
+    float centerLightness = luminocity(sRGB);
+    float centerGain = getGain(xy, vec2(0.0));
+    float localMaxLightness = centerLightness;
+    localMinGain = centerGain;
+    localMaxGain = centerGain;
     for (int i = -1; i <= 1; i++) {
         for (int j = -1; j <= 1; j++) {
             // Average lightness over a 2x2 block to match the FusionMap scale.
@@ -587,9 +598,19 @@ void main() {
             lightness += luminocity(texelFetch(InputBuffer, clampInputPos(xy + ivec2(i*2, j*2+1), inputSize), 0).rgb);
             lightness += luminocity(texelFetch(InputBuffer, clampInputPos(xy + ivec2(i*2+1, j*2+1), inputSize), 0).rgb);
             lightness *= 0.25;
-            float gain = getGain(offset);
-            // Gaussian weight based on spatial distance
-            float w = exp(-float(i*i + j*j) / sigmaSq2);
+            localMaxLightness = max(localMaxLightness, lightness);
+            float gain = getGain(xy, offset);
+            // Combine spatial and guide-range weights. Spatial-only fitting
+            // lets a bright building's gain model leak into nearby sky pixels.
+            float spatialWeight = exp(-float(i*i + j*j) / sigmaSq2);
+            float lumaDelta = lightness - centerLightness;
+            float rangeWeight = exp(-(lumaDelta * lumaDelta) / lumaSigmaSq2);
+            float w = spatialWeight * rangeWeight;
+            // Fade different guide regions toward the center gain in the
+            // local envelope, avoiding a hard inclusion boundary at edges.
+            float envelopeGain = mix(centerGain, gain, rangeWeight);
+            localMinGain = min(localMinGain, envelopeGain);
+            localMaxGain = max(localMaxGain, envelopeGain);
             momentX += lightness * w;
             momentY += gain * w;
             momentX2 += lightness * lightness * w;
@@ -603,9 +624,27 @@ void main() {
     float covXY = momentXY * invWs - meanX * meanY;
     float varX = momentX2 * invWs - meanX * meanX;
     // Handle zero variance case with epsilon for stability
-    float a = covXY / (max(varX, 0.0) + 0.0001);
+    float guideVariance = max(varX, 0.0);
+    float varianceRegularizer = 0.0001 + 0.001 * max(meanX, 0.01);
+    float a = clamp(covXY / (guideVariance + varianceRegularizer), -8.0, 8.0);
     float b = meanY - a * meanX;
-    tonemapGain = a * luminocity(sRGB) + b;
+    float guidedGain = a * luminocity(sRGB) + b;
+    float guideConfidence = guideVariance / (guideVariance + varianceRegularizer);
+    tonemapGain = mix(centerGain, guidedGain, guideConfidence);
+    // Do not allow the affine fit to extrapolate a building's highlight gain
+    // into the sky. The global limits remain a final safety bound.
+    tonemapGain = clamp(tonemapGain, localMinGain, localMaxGain);
+    // Positive fusion gain is highlight recovery, not a general sky/midtone
+    // lift. Gate boosts by proximity to the local bright tail: only pixels
+    // within the top ~15% of the local maximum lightness keep gain above 1, so
+    // the source itself is recovered but the dimmer halo ring around it stays
+    // neutral instead of inheriting the source's gain.
+    float brightTail = max(localMaxLightness, centerLightness);
+    // The absolute 0.45 floor keeps flat shadow regions neutral (they must not
+    // inherit fusion gain), while the brightTail-relative ramp suppresses the
+    // dimmer halo ring around an actual bright source.
+    float highlightMask = smoothstep(max(0.45, brightTail * 0.85), max(brightTail, 1e-4), centerLightness);
+    tonemapGain = mix(min(tonemapGain, 1.0), tonemapGain, highlightMask);
     tonemapGain = clamp(tonemapGain, 0.25, 8.0);
     //tonemapGain = mix(1.0,tonemapGain,texture(IntenseCurve, vec2(dot(sRGB.rgb,vec3(1.0/3.0)),0.0)).r);
     //tonemapGain = max(tonemapGain, 0.5);

@@ -15,6 +15,7 @@ uniform int ROTATE;
 uniform int MIRROR;
 uniform ivec2 RAW_SIZE;
 uniform int CROP_H;
+uniform int CROP_Y;
 out vec4 Output;
 
 // Computes the Ultra HDR gain map from the intermediate pipeline texture.
@@ -29,16 +30,22 @@ float srgbToLinear(float value) {
             ? value / 12.92
             : pow((value + 0.055) / 1.055, 2.4);
 }
+
+float hashDither(ivec2 p) {
+    float v = sin(float(p.x) * 12.9898 + float(p.y) * 78.233) * 43758.5453;
+    return fract(v) - 0.5;
+}
+
 ivec2 mapOutputToSource(ivec2 outCoord, ivec2 texSize) {
     ivec2 src;
     switch (ROTATE) {
         case 0:
-            src = ivec2(outCoord.x, outCoord.y + texSize.y - CROP_H);
+            src = ivec2(outCoord.x, outCoord.y + CROP_Y);
             if (MIRROR == 1) src.y = texSize.y - 1 - src.y;
             break;
         case 1:
             src = ivec2(texSize.x - 1 - outCoord.y,
-                    outCoord.x + texSize.y - CROP_H);
+                    outCoord.x + CROP_Y);
             if (MIRROR == 1) src.y = texSize.y - 1 - src.y;
             break;
         case 2:
@@ -81,7 +88,11 @@ void main() {
     // smoothly as the base rolls out of black.
     L *= smoothstep(0.0, 0.02, sdrLin);
     if (GAIN_SCALE > 0.0) {
-        Output = vec4(clamp((L - GAIN_MIN) * GAIN_SCALE, 0.0, 255.0), 0.0, 0.0, 0.0);
+        // GL_R8 is normalized: write [0,1], not the nominal byte value.
+        // A sub-byte dither breaks contours in smooth HDR gradients before
+        // the gain map is read back and JPEG-compressed.
+        float encoded = (L - GAIN_MIN) * GAIN_SCALE + hashDither(src);
+        Output = vec4(clamp(encoded / 255.0, 0.0, 1.0), 0.0, 0.0, 0.0);
     } else {
         Output = vec4(L, 0.0, 0.0, 0.0);
     }
