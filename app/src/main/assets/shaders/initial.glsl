@@ -588,7 +588,7 @@ void main() {
     float ws = 0.0;
     float localMinGain = FUSIONCAP;
     float localMaxGain = 0.25;
-    const float sigma = 1.2;
+    const float sigma = 2.0;
     const float sigmaSq2 = 2.0 * sigma * sigma;
     const float lumaSigma = 0.08;
     const float lumaSigmaSq2 = 2.0 * lumaSigma * lumaSigma;
@@ -598,16 +598,14 @@ void main() {
     float localMaxLightness = centerLightness;
     localMinGain = centerGain;
     localMaxGain = centerGain;
-    for (int i = -1; i <= 1; i++) {
-        for (int j = -1; j <= 1; j++) {
-            // Average lightness over a 2x2 block to match the FusionMap scale.
-            vec2 offset = vec2(float(i*2), float(j*2));
-            float lightness = 0.0;
-            lightness += luminocity(texelFetch(InputBuffer, clampInputPos(xy + ivec2(i*2, j*2), inputSize), 0).rgb);
-            lightness += luminocity(texelFetch(InputBuffer, clampInputPos(xy + ivec2(i*2+1, j*2), inputSize), 0).rgb);
-            lightness += luminocity(texelFetch(InputBuffer, clampInputPos(xy + ivec2(i*2, j*2+1), inputSize), 0).rgb);
-            lightness += luminocity(texelFetch(InputBuffer, clampInputPos(xy + ivec2(i*2+1, j*2+1), inputSize), 0).rgb);
-            lightness *= 0.25;
+    for (int i = -2; i <= 2; i++) {
+        for (int j = -2; j <= 2; j++) {
+            // Sample the guide at full resolution. The previous 2x2 block
+            // averaging on a 2-pixel-aligned grid read different block
+            // boundaries for even- and odd-parity pixels, painting a
+            // vertical/horizontal grid on tree edges and fine detail.
+            vec2 offset = vec2(float(i), float(j));
+            float lightness = luminocity(texelFetch(InputBuffer, clampInputPos(xy + ivec2(i, j), inputSize), 0).rgb);
             localMaxLightness = max(localMaxLightness, lightness);
             float gain = getGain(xy, offset);
             // Combine spatial and guide-range weights. Spatial-only fitting

@@ -143,7 +143,9 @@ public class LtmShaderRegressionTest {
         assertTrue(bayer.contains("clamp(xyCenter + ivec2(0, 1)"));
         assertTrue(fusionMap.contains("ivec2 safePos = clamp(xy"));
         assertTrue(initial.contains("ivec2 clampInputPos(ivec2 pos, ivec2 inputSize)"));
-        assertTrue(initial.contains("clampInputPos(xy + ivec2(i*2+1, j*2+1), inputSize)"));
+        assertTrue(initial.contains("clampInputPos(xy + ivec2(i, j), inputSize)"));
+        assertTrue(initial.contains("vec2 offset = vec2(float(i), float(j))"));
+        assertTrue(initial.contains("const float sigma = 2.0"));
     }
 
     @Test
