@@ -8,6 +8,9 @@ uniform int yOffset;
 #define DH (0.0)
 #define FUSIONGAIN 1.0
 #define NORM 64.0
+// Ceiling on the highlight-recovery gain carried by the map. Keeps bright
+// areas from blowing out while still lifting clipped highlights.
+#define FUSIONCAP 3.0
 #define luminocity(x) dot(x.rgb, vec3(0.299, 0.587, 0.114))
 float gammaInverse(float x) {
     return x*x;
@@ -34,7 +37,7 @@ void main() {
     // neutral gain there and transition smoothly into the measured ratio as
     // the denominator becomes informative, avoiding additive-offset bias.
     float ratioConfidence = smoothstep(0.001, 0.01, baseValue);
-    float lowresVal  = clamp(mix(1.0, ratio, ratioConfidence), 0.0, 8.0);
+    float lowresVal  = clamp(mix(1.0, ratio, ratioConfidence), 0.0, FUSIONCAP);
     // /FUSIONGAIN so getGain()'s *FUSIONGAIN recovers the true gain.
     result = vec2(lowresVal / FUSIONGAIN, 0.0);
 }

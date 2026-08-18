@@ -72,6 +72,14 @@ out vec4 Output;
 #define FUSIONNORM 64.0
 #define VIGNETTE 0.0
 #define LTMMIX 0.0
+// Ceiling on highlight-recovery gain and the depth of the shadow/midtone
+// contrast curve (see the FUSION block). The curve is luma-anchored so the
+// midtone stays near its original exposure while shadows regain the rich,
+// deeper look of a uniform gain reduction, and highlights never get lifted
+// by the curve itself (only by the capped recovery gain).
+#define FUSIONCAP 3.0
+#define FUSIONCURVE 0.35
+#define FUSIONANCHOR 0.7
 #import coords
 #import interpolation
 #import gaussian
@@ -576,7 +584,7 @@ void main() {
     // consistent with the edge structure instead of smearing it across edges.
     float momentX = 0.0, momentY = 0.0, momentX2 = 0.0, momentXY = 0.0;
     float ws = 0.0;
-    float localMinGain = 8.0;
+    float localMinGain = FUSIONCAP;
     float localMaxGain = 0.25;
     const float sigma = 1.2;
     const float sigmaSq2 = 2.0 * sigma * sigma;
@@ -626,7 +634,7 @@ void main() {
     // Handle zero variance case with epsilon for stability
     float guideVariance = max(varX, 0.0);
     float varianceRegularizer = 0.0001 + 0.001 * max(meanX, 0.01);
-    float a = clamp(covXY / (guideVariance + varianceRegularizer), -8.0, 8.0);
+    float a = clamp(covXY / (guideVariance + varianceRegularizer), -FUSIONCAP, FUSIONCAP);
     float b = meanY - a * meanX;
     float guidedGain = a * luminocity(sRGB) + b;
     float guideConfidence = guideVariance / (guideVariance + varianceRegularizer);
@@ -644,7 +652,14 @@ void main() {
     float shadowFloor = smoothstep(0.2, 0.35, centerLightness);
     float highlightMask = haloGate * shadowFloor;
     tonemapGain = mix(min(tonemapGain, 1.0), tonemapGain, highlightMask);
-    tonemapGain = clamp(tonemapGain, 0.25, 8.0);
+    // Restore the deep, punchy character the uniform gain reduction used to
+    // give without the exposure drop: deepen shadow/midtone gains below the
+    // luma anchor, leave everything at/above the anchor untouched, so the
+    // curve itself never lifts highlights. Recovery gain is still capped by
+    // FUSIONCAP so bright areas stay tame.
+    float curveLightness = luminocity(sRGB);
+    tonemapGain *= 1.0 - FUSIONCURVE * clamp(1.0 - curveLightness / FUSIONANCHOR, 0.0, 1.0);
+    tonemapGain = clamp(tonemapGain, 0.25, FUSIONCAP);
     //tonemapGain = mix(1.0,tonemapGain,texture(IntenseCurve, vec2(dot(sRGB.rgb,vec3(1.0/3.0)),0.0)).r);
     //tonemapGain = max(tonemapGain, 0.5);
     #endif

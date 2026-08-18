@@ -100,7 +100,8 @@ public class LtmShaderRegressionTest {
         // coefficients. The map must carry the bounded gain ratio (not (a,b)
         // fit coefficients) so getGain() returns a real gain.
         assertTrue(fusionMap.contains("float lowresVal  = clamp("));
-        assertTrue(fusionMap.contains(", 0.0, 8.0)"));
+        assertTrue(fusionMap.contains("clamp(mix(1.0, ratio, ratioConfidence), 0.0, FUSIONCAP)"));
+        assertFalse(fusionMap.contains(", 0.0, 8.0)"));
         assertTrue(fusionMap.contains("float ratioConfidence = smoothstep(0.001, 0.01, baseValue)"));
         assertTrue(fusionMap.contains("mix(1.0, ratio, ratioConfidence)"));
         assertTrue(fusionMap.contains("result = vec2(lowresVal / FUSIONGAIN, 0.0)"));
@@ -120,7 +121,9 @@ public class LtmShaderRegressionTest {
         assertTrue(shader.contains("mix(min(tonemapGain, 1.0), tonemapGain, highlightMask)"));
         assertTrue(shader.contains("float guideConfidence = guideVariance / (guideVariance + varianceRegularizer)"));
         assertTrue(shader.contains("float guidedGain = a * luminocity(sRGB) + b"));
-        assertTrue(shader.contains("tonemapGain = clamp(tonemapGain, 0.25, 8.0)"));
+        assertTrue(shader.contains("tonemapGain = clamp(tonemapGain, 0.25, FUSIONCAP)"));
+        assertTrue(shader.contains("1.0 - FUSIONCURVE * clamp(1.0 - curveLightness / FUSIONANCHOR, 0.0, 1.0)"));
+        assertFalse(shader.contains("tonemapGain = clamp(tonemapGain, 0.25, 8.0)"));
     }
 
     @Test
