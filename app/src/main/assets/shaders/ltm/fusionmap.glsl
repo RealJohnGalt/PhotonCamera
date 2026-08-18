@@ -35,8 +35,6 @@ void main() {
     // the denominator becomes informative, avoiding additive-offset bias.
     float ratioConfidence = smoothstep(0.001, 0.01, baseValue);
     float lowresVal  = clamp(mix(1.0, ratio, ratioConfidence), 0.0, 8.0);
-    // /FUSIONGAIN so getGain()'s *FUSIONGAIN recovers the true gain; *factor
-    // preserves the exposure-correction scaling of the legacy coefficient path.
+    // /FUSIONGAIN so getGain()'s *FUSIONGAIN recovers the true gain.
     result = vec2(lowresVal / FUSIONGAIN, 0.0);
-    result *= clamp(factor, 0.0, 1.0);
 }

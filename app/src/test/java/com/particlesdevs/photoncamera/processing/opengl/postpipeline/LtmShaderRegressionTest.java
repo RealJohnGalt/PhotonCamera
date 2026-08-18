@@ -105,6 +105,7 @@ public class LtmShaderRegressionTest {
         assertTrue(fusionMap.contains("mix(1.0, ratio, ratioConfidence)"));
         assertTrue(fusionMap.contains("result = vec2(lowresVal / FUSIONGAIN, 0.0)"));
         assertFalse(fusionMap.contains("result = vec2(a,b)"));
+        assertFalse(fusionMap.contains("result *= clamp(factor"));
         assertTrue(shader.contains("float gain = getGain(xy, offset)"));
         assertTrue(shader.contains("float rangeWeight = exp("));
         assertTrue(shader.contains("const float lumaSigma = 0.08"));
