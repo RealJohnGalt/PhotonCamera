@@ -80,6 +80,11 @@ out vec4 Output;
 #define FUSIONCAP 3.0
 #define FUSIONCURVE 0.35
 #define FUSIONANCHOR 0.7
+// Deep shadows (below FUSIONLO) are exempt from the contrast curve so HDR
+// regions — a dark subject against a bright sky — keep the gated recovery
+// gain instead of being crushed; the deepening fades back in over FUSIONBAND.
+#define FUSIONLO 0.45
+#define FUSIONBAND 0.1
 #import coords
 #import interpolation
 #import gaussian
@@ -655,10 +660,12 @@ void main() {
     // Restore the deep, punchy character the uniform gain reduction used to
     // give without the exposure drop: deepen shadow/midtone gains below the
     // luma anchor, leave everything at/above the anchor untouched, so the
-    // curve itself never lifts highlights. Recovery gain is still capped by
-    // FUSIONCAP so bright areas stay tame.
+    // curve itself never lifts highlights. Deep shadows (below FUSIONLO) are
+    // protected so a dark subject against a bright sky is not crushed.
     float curveLightness = luminocity(sRGB);
-    tonemapGain *= 1.0 - FUSIONCURVE * clamp(1.0 - curveLightness / FUSIONANCHOR, 0.0, 1.0);
+    float baseDepth = clamp(1.0 - curveLightness / FUSIONANCHOR, 0.0, 1.0);
+    float protectedDepth = baseDepth * smoothstep(FUSIONLO, FUSIONLO + FUSIONBAND, curveLightness);
+    tonemapGain *= 1.0 - FUSIONCURVE * protectedDepth;
     tonemapGain = clamp(tonemapGain, 0.25, FUSIONCAP);
     //tonemapGain = mix(1.0,tonemapGain,texture(IntenseCurve, vec2(dot(sRGB.rgb,vec3(1.0/3.0)),0.0)).r);
     //tonemapGain = max(tonemapGain, 0.5);
