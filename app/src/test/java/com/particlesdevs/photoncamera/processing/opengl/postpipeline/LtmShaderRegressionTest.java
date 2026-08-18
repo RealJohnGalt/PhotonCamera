@@ -123,7 +123,8 @@ public class LtmShaderRegressionTest {
         assertTrue(shader.contains("float guideConfidence = guideVariance / (guideVariance + varianceRegularizer)"));
         assertTrue(shader.contains("float guidedGain = a * luminocity(sRGB) + b"));
         assertTrue(shader.contains("tonemapGain = clamp(tonemapGain, 0.25, FUSIONCAP)"));
-        assertTrue(shader.contains("tonemapGain *= 1.0 - FUSIONCURVE * baseDepth"));
+        assertFalse(shader.contains("FUSIONCURVE"));
+        assertFalse(shader.contains("baseDepth"));
         assertFalse(shader.contains("protectedDepth"));
         assertFalse(shader.contains("FUSIONLO"));
         assertFalse(shader.contains("tonemapGain = clamp(tonemapGain, 0.25, 8.0)"));

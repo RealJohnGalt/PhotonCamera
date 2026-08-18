@@ -72,14 +72,10 @@ out vec4 Output;
 #define FUSIONNORM 64.0
 #define VIGNETTE 0.0
 #define LTMMIX 0.0
-// Ceiling on highlight-recovery gain and the depth of the shadow/midtone
-// contrast curve (see the FUSION block). The curve is luma-anchored so the
-// midtone stays near its original exposure while shadows regain the rich,
-// deeper look of a uniform gain reduction, and highlights never get lifted
-// by the curve itself (only by the capped recovery gain).
+// Ceiling on the highlight-recovery gain (see the FUSION block). Per Wronski
+// the fusion gain is applied as-is: flat midtones and shadows keep the fusion
+// exposure baseline instead of being deepened by a shadow curve.
 #define FUSIONCAP 3.0
-#define FUSIONCURVE 0.30
-#define FUSIONANCHOR 0.7
 #import coords
 #import interpolation
 #import gaussian
@@ -652,16 +648,6 @@ void main() {
     float shadowFloor = smoothstep(0.2, 0.35, centerLightness);
     float highlightMask = haloGate * shadowFloor;
     tonemapGain = mix(min(tonemapGain, FUSIONGAIN), tonemapGain, highlightMask);
-    // Restore the deep, punchy character the uniform gain reduction used to
-    // give without the exposure drop: deepen shadow/midtone gains below the
-    // luma anchor, leave everything at/above the anchor untouched, so the
-    // curve itself never lifts highlights. Monotonic in luma (deepest at the
-    // shadows, fading to neutral at the anchor) so the gain never reverses
-    // against the fusion exposure baseline and cannot paint a banded halo on
-    // the edge of a shadow against a bright sky.
-    float curveLightness = luminocity(sRGB);
-    float baseDepth = clamp(1.0 - curveLightness / FUSIONANCHOR, 0.0, 1.0);
-    tonemapGain *= 1.0 - FUSIONCURVE * baseDepth;
     tonemapGain = clamp(tonemapGain, 0.25, FUSIONCAP);
     //tonemapGain = mix(1.0,tonemapGain,texture(IntenseCurve, vec2(dot(sRGB.rgb,vec3(1.0/3.0)),0.0)).r);
     //tonemapGain = max(tonemapGain, 0.5);
