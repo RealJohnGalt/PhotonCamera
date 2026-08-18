@@ -80,7 +80,8 @@ public class LtmShaderRegressionTest {
         // SDR clamp so the gain map recovers lifted highlights instead of
         // exposing the clipped base.
         assertTrue(shader.contains("linearLum = min(luminocity(pRGBBoosted), 16.0)"));
-        assertTrue(shader.contains("pRGB = clamp(pRGBBoosted, 0.0, 1.0)"));
+        assertTrue(shader.contains("pRGB = clamp(reinhard_extended(pRGBBoosted, max(1.0, tonemapGain)), 0.0, 1.0)"));
+        assertFalse(shader.contains("pRGB = clamp(pRGBBoosted, 0.0, 1.0)"));
         // Shadow side must fade gain smoothly instead of a binary deadband jump
         // and must not amplify the alpha noise floor in near-black pixels.
         assertTrue(gainMap.contains("smoothstep(0.0, GAIN_DEADBAND, L)"));
@@ -122,8 +123,9 @@ public class LtmShaderRegressionTest {
         assertTrue(shader.contains("float guideConfidence = guideVariance / (guideVariance + varianceRegularizer)"));
         assertTrue(shader.contains("float guidedGain = a * luminocity(sRGB) + b"));
         assertTrue(shader.contains("tonemapGain = clamp(tonemapGain, 0.25, FUSIONCAP)"));
-        assertTrue(shader.contains("float protectedDepth = baseDepth * smoothstep(FUSIONLO, FUSIONLO + FUSIONBAND, curveLightness)"));
-        assertTrue(shader.contains("tonemapGain *= 1.0 - FUSIONCURVE * protectedDepth"));
+        assertTrue(shader.contains("tonemapGain *= 1.0 - FUSIONCURVE * baseDepth"));
+        assertFalse(shader.contains("protectedDepth"));
+        assertFalse(shader.contains("FUSIONLO"));
         assertFalse(shader.contains("tonemapGain = clamp(tonemapGain, 0.25, 8.0)"));
     }
 

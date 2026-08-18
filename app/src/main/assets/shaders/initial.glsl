@@ -78,13 +78,8 @@ out vec4 Output;
 // deeper look of a uniform gain reduction, and highlights never get lifted
 // by the curve itself (only by the capped recovery gain).
 #define FUSIONCAP 3.0
-#define FUSIONCURVE 0.35
+#define FUSIONCURVE 0.30
 #define FUSIONANCHOR 0.7
-// Deep shadows (below FUSIONLO) are exempt from the contrast curve so HDR
-// regions — a dark subject against a bright sky — keep the gated recovery
-// gain instead of being crushed; the deepening fades back in over FUSIONBAND.
-#define FUSIONLO 0.45
-#define FUSIONBAND 0.1
 #import coords
 #import interpolation
 #import gaussian
@@ -440,8 +435,10 @@ vec3 applyColorSpace(vec3 pRGB, float tonemapGain, float gainsVal, out float lin
     // highlights lifted by tonemapGain keep a positive log2 ratio versus the
     // clamped base. Capped at 16.0 (MAX_CONTENT_BOOST) to bound gain stats.
     linearLum = min(luminocity(pRGBBoosted), 16.0);
-    pRGB = clamp(pRGBBoosted, 0.0, 1.0);
-    //pRGB = clamp(reinhard_extended(pRGB*tonemapGain,max(1.0,tonemapGain)),vec3(0.0),vec3(1.0));
+    // Roll the boosted range off softly instead of a hard clip: dim scenes with
+    // a large fusion exposure keep their highlight range instead of flattening
+    // toward white. Identical to a plain clamp while tonemapGain <= 1.
+    pRGB = clamp(reinhard_extended(pRGBBoosted, max(1.0, tonemapGain)), 0.0, 1.0);
 
     pRGB = clamp(reinhard_extended(pRGB*gainsVal,max(1.0,gainsVal)),vec3(0.0),vec3(1.0));
     //pRGB = clamp(pRGB*tonemapGain*gainsVal,vec3(0.0),vec3(1.0));
@@ -660,12 +657,13 @@ void main() {
     // Restore the deep, punchy character the uniform gain reduction used to
     // give without the exposure drop: deepen shadow/midtone gains below the
     // luma anchor, leave everything at/above the anchor untouched, so the
-    // curve itself never lifts highlights. Deep shadows (below FUSIONLO) are
-    // protected so a dark subject against a bright sky is not crushed.
+    // curve itself never lifts highlights. Monotonic in luma (deepest at the
+    // shadows, fading to neutral at the anchor) so the gain never reverses
+    // against the fusion exposure baseline and cannot paint a banded halo on
+    // the edge of a shadow against a bright sky.
     float curveLightness = luminocity(sRGB);
     float baseDepth = clamp(1.0 - curveLightness / FUSIONANCHOR, 0.0, 1.0);
-    float protectedDepth = baseDepth * smoothstep(FUSIONLO, FUSIONLO + FUSIONBAND, curveLightness);
-    tonemapGain *= 1.0 - FUSIONCURVE * protectedDepth;
+    tonemapGain *= 1.0 - FUSIONCURVE * baseDepth;
     tonemapGain = clamp(tonemapGain, 0.25, FUSIONCAP);
     //tonemapGain = mix(1.0,tonemapGain,texture(IntenseCurve, vec2(dot(sRGB.rgb,vec3(1.0/3.0)),0.0)).r);
     //tonemapGain = max(tonemapGain, 0.5);
