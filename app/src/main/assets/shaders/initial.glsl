@@ -60,6 +60,7 @@ out vec4 Output;
 #define LTMMIX 0.0
 #define FUSIONCAP 8.0
 #define FUSIONFLOOR 0.25
+#define LTMCONTRASTBOOST 1.15
 // Range gate for the guided-filter refit and strength of the affine refit
 // deviation. A wider gate lets near-edge taps contribute so the gain field
 // fades gradually across tonal edges (the shadow plateau boundary stops
@@ -335,7 +336,7 @@ void main() {
     float gateLuma = gateLumaSum / gateLumaWs;
     float gateVar = max(gateLumaSqSum / gateLumaWs - gateLuma * gateLuma, 0.0);
     float gateStd = sqrt(max(gateVar, 0.0));
-    float brightTail = gateLuma + 2.0 * gateStd;
+    float brightTail = gateLuma + 1.5 * gateStd;
     float haloGate = smoothstep(brightTail * 0.85, max(brightTail, 1e-4), gateLuma);
     float shadowFloor = smoothstep(0.15, 0.45, gateLuma);
     float highlightMask = haloGate * shadowFloor;
@@ -354,7 +355,7 @@ void main() {
     float linearLum = 0.0;
     sRGB = applyColorSpace(sRGB, tonemapGain, gainsVal, linearLum);
     sRGB = saturate(sRGB,SATURATION2,SATURATION);
-    sRGB = contrastSin(sRGB,mix(CONTRAST+SHADOWS, CONTRAST, luminocity(sRGB)));
+    sRGB = contrastSin(sRGB,mix(CONTRAST+SHADOWS, CONTRAST, luminocity(sRGB)) * LTMCONTRASTBOOST);
     #if ULTRAHDR == 1
     Output = vec4(clamp(sRGB,0.0,1.0), linearLum);
     #else
