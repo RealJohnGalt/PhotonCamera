@@ -158,6 +158,7 @@ public class PostPipeline extends GLBasePipeline {
         
         try {
             BuildDefaultPipeline();
+            computeFusionMapNormalization();
             GLImage resImg = runAll();
             Bitmap res;
             try {
@@ -308,5 +309,13 @@ public class PostPipeline extends GLBasePipeline {
         //add(new Sharpen("sharpen33"));
 
         add(new RotateWatermark(getRotation()));
+    }
+
+    private void computeFusionMapNormalization() {
+        if (fusionGain > 0.0f && fusionGain < 1.0f) {
+            mapNorm = 1.0f / fusionGain;
+        } else {
+            mapNorm = 1.0f;
+        }
     }
 }
