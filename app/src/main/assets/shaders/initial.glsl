@@ -288,11 +288,16 @@ void main() {
     const float lumaSigmaSq2 = 2.0 * lumaSigma * lumaSigma;
     ivec2 inputSize = textureSize(InputBuffer, 0);
     float centerLightness = luminocity(sRGB);
+    // Darkest luma in the window. Drives the gain ceiling so the shadow-lift
+    // release is eroded 2px into bright regions adjacent to dark content:
+    // no pixel near a dark object can lift, so no release ring can form.
+    float minLuma = centerLightness;
     for (int i = -2; i <= 2; i++) {
         for (int j = -2; j <= 2; j++) {
             float lightness = luminocity(texelFetch(InputBuffer,
                                                     clampInputPos(xy + ivec2(i, j), inputSize),
                                                     0).rgb);
+            minLuma = min(minLuma, lightness);
             float spatialWeight = exp(-float(i*i + j*j) / sigmaSq2);
             // Block-aligned map sample: every tap inside the same 2x2 block
             // reads the same texel, so the moments carry no even/odd phase.
@@ -329,17 +334,18 @@ void main() {
     // present in this window: that is exactly how over/under-shoots (halos)
     // appear.
     tonemapGain = clamp(tonemapGain, localMinGain, localMaxGain);
-    // Per-pixel gain ceiling driven by the CENTER pixel's own luma, not by
-    // window statistics. A spatial window straddles tonal edges, so a mask
-    // computed from it releases the shadow cap over a multi-pixel band around
-    // the edge - and that partially-released band is the bright rim on dark
-    // branches against the sky. A smooth function of the center luma follows
-    // the image's own edge pixel-exactly: dark pixels stay capped, bright
-    // pixels are released, and the gain transition coincides with the visible
-    // luminance step that masks it. On smooth gradients the ceiling varies
-    // smoothly with luma, so no per-pixel grid can form.
+    // Gain ceiling driven by the DARKEST luma in the window, not the center
+    // pixel. A center-luma gate releases the shadow cap on anti-aliased edge
+    // pixels (luma 0.15-0.45) while the adjacent dark object stays capped,
+    // and that partial-release ring is the bright halo around dark objects
+    // (TV on a wall, branches against sky). The window minimum erodes the
+    // release 2px into the bright side, so the lift can only engage in
+    // regions that contain no dark content at all. Gains below FUSIONGAIN
+    // (highlight compression) are never touched by the ceiling. The release
+    // band starts higher (0.20) and ends higher (0.55) so dark, noisy
+    // shadows are not lifted into visibility.
     float gainCeiling = mix(FUSIONGAIN, FUSIONCAP,
-            smoothstep(0.15, 0.45, centerLightness));
+            smoothstep(0.20, 0.55, minLuma));
     tonemapGain = min(tonemapGain, gainCeiling);
     tonemapGain = clamp(tonemapGain, 0.25, FUSIONCAP);
     #endif

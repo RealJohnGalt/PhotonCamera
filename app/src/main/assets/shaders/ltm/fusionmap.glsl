@@ -83,7 +83,14 @@ void main() {
     // the gate truncates it near an edge, and the map must stay inside its
     // legal gain range before the full-res application.
     float lowresVal  = clamp(ratioSum / max(ws, 1e-6), 0.0, FUSIONCAP);
+    // Dark-base gain cap: in deep shadows the fused/base ratio is dominated
+    // by the long-exposure lift, and applying it multiplies the shadow noise
+    // floor by the same factor. Limit the lift where the base is dark and
+    // release it smoothly into the midtones, where the signal can afford it.
+    // Applied to the smoothed map, so the cap cannot introduce spatial
+    // structure of its own.
+    float darkCap = mix(1.5, FUSIONCAP, smoothstep(0.04, 0.20, centerBase));
+    lowresVal = min(lowresVal, darkCap);
     // /FUSIONGAIN so the *FUSIONGAIN in initial.glsl recovers the true gain.
-    // initial.glsl then applies the CPU mapNorm guard on top.
     result = vec2(lowresVal / FUSIONGAIN, 0.0);
 }
