@@ -16,7 +16,7 @@ out vec2 result;
 // dies) and below genuine edge steps (so the gain edge is not bled across).
 // Typical edge steps in BrBuffer are ~0.1; if the pattern survives, raise it
 // slightly, if an edge looks soft, lower it.
-#define RANGESIGMA 0.065
+#define RANGESIGMA 0.055
 #define luminocity(x) dot(x.rgb, vec3(0.299, 0.587, 0.114))
 float gammaInverse(float x) {
     return x*x;
