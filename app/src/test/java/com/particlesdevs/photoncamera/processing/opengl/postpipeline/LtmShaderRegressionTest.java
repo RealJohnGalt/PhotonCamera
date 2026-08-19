@@ -129,7 +129,7 @@ public class LtmShaderRegressionTest {
         assertTrue(shader.contains("ivec2 blockCenter = blockBase + ivec2(1, 1)"));
         assertTrue(shader.contains("vec2 uv = vec2(blockCenter) / vec2(inputSize)"));
         assertFalse(shader.contains("vec2 uv = (vec2(blockCenter) + vec2(0.5)) / vec2(inputSize)"));
-        assertTrue(shader.contains("return texture(FusionMap, uv).r * FUSIONGAIN * mapNorm;"));
+        assertTrue(shader.contains("return texture(FusionMap, uv).r * FUSIONGAIN;"));
         // The guided-filter window reads the map at each tap's own block center:
         // block-aligned, so the moments carry no even/odd phase. It must not
         // re-derive a non-block-aligned per-pixel sample, or windowed moments

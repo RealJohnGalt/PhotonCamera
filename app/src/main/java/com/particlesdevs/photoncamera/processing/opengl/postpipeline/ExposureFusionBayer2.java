@@ -79,42 +79,6 @@ public class ExposureFusionBayer2 extends Node {
         vectored.close();
     }
 
-    /**
-     * Mean-preserving guard for the LTM FusionMap. The map carries the
-     * fused/base gain ratio; in bright, high-contrast scenes the exposure
-     * fusion can pull it systematically below 1, which multiplies a sub-unity
-     * gain into every pixel and darkens the whole frame (downstream
-     * auto-exposure cannot recover it). Returns a uniform scale that brings
-     * the map's mean gain back up to at least 1, and is never applied when the
-     * map already averages at or above 1, so the shadow lift in genuinely dark
-     * scenes is preserved. The map's .r channel is histogrammed on the GPU and
-     * only 256 bins are read back, so the per-frame cost is a single small
-     * readback.
-     */
-    float mapNormalization(GLTexture map){
-        GLTexture vectored = glUtils.convertVec4(map, "in1.r");
-        GLHistogram histogram = new GLHistogram(basePipeline.glint.glProcessing);
-        histogram.Rc = true;
-        histogram.Gc = false;
-        histogram.Bc = false;
-        histogram.Ac = false;
-        histogram.Compute(vectored);
-        int[] bins = histogram.outputArr[0];
-        long cnt = 0;
-        long sum = 0;
-        for (int i = 0; i < bins.length; i++) {
-            cnt += bins[i];
-            sum += (long) bins[i] * i;
-        }
-        histogram.close();
-        vectored.close();
-        if (cnt <= 0 || sum <= 0) return 1.0f;
-        float meanStored = (float) sum / (float) cnt / (float) (bins.length - 1);
-        float meanGain = meanStored * ((PostPipeline) basePipeline).fusionGain;
-        if (meanGain >= 1.0f) return 1.0f;
-        return Math.max(1.0f, Math.min(1.0f / Math.max(meanGain, 1e-4f), 8.0f));
-    }
-
     float autoExposureHigh(){
         float avr = 0.f;
         float w = 0.01f;
@@ -611,9 +575,6 @@ public class ExposureFusionBayer2 extends Node {
         basePipeline.main3.mSize.y = initialSize.y;
         ((PostPipeline)basePipeline).FusionMap =
                 fusionMap(binnedFuse,exposureBase, (float)((PostPipeline)basePipeline).AecCorr/2.f);
-        ((PostPipeline)basePipeline).mapNorm =
-                mapNormalization(((PostPipeline)basePipeline).FusionMap);
-        Log.d(Name,"MapNorm:"+((PostPipeline)basePipeline).mapNorm);
         //Use EDI to interpolate fusionmap
 
 

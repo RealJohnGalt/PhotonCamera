@@ -41,7 +41,6 @@ public class PostPipeline extends GLBasePipeline {
     float totalGain = 1.f;
     float AecCorr = 1.f;
     float fusionGain = 1.f;
-    float mapNorm = 1.0f;
     float softLight = 1.f;
 
     public boolean ultraHdrEnabled = false;
@@ -105,7 +104,6 @@ public class PostPipeline extends GLBasePipeline {
         gainMapMinBoost = 1.0f;
         gainMapResult = null;
         totalGain = 1.0f;
-        mapNorm = 1.0f;
         if (PreferenceKeys.isUltraHdrOn()) {
             Log.d("PostPipeline", "UltraHDR enabled=" + ultraHdrEnabled);
         }
@@ -158,7 +156,6 @@ public class PostPipeline extends GLBasePipeline {
         
         try {
             BuildDefaultPipeline();
-            computeFusionMapNormalization();
             GLImage resImg = runAll();
             Bitmap res;
             try {
@@ -309,13 +306,5 @@ public class PostPipeline extends GLBasePipeline {
         //add(new Sharpen("sharpen33"));
 
         add(new RotateWatermark(getRotation()));
-    }
-
-    private void computeFusionMapNormalization() {
-        if (fusionGain > 0.0f && fusionGain < 1.0f) {
-            mapNorm = 1.0f / fusionGain;
-        } else {
-            mapNorm = 1.0f;
-        }
     }
 }

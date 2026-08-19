@@ -406,7 +406,6 @@ import static com.particlesdevs.photoncamera.util.Math2.mix;
         glProg.setTexture("IntenseCurve", interpolatedCurve);
         glProg.setTexture("GainMap", ((PostPipeline) basePipeline).GainMap);
         glProg.setVar("toneMapCoeffs", -2.f + 2.f * toneMix, 3.f - 3.f * toneMix, toneMix, 0.f);
-        glProg.setVar("mapNorm", ((PostPipeline) basePipeline).mapNorm);
         glProg.setVar("sensorToIntermediate", basePipeline.mParameters.sensorToProPhoto);
         glProg.setVar("intermediateToSRGB", cctMatrix);
         if (((PostPipeline) basePipeline).FusionMap != null) {

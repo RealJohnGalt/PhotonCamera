@@ -15,7 +15,6 @@ uniform mat3 sensorToIntermediate;
 uniform mat3 intermediateToSRGB;
 #endif
 uniform vec4 toneMapCoeffs;
-uniform float mapNorm;
 uniform ivec4 activeSize;
 #if CCT == 1
 uniform mat3 CUBE0;
@@ -246,16 +245,13 @@ vec3 applyColorSpace(vec3 pRGB, float tonemapGain, float gainsVal, out float lin
 // four pixels in the block share one gain prior and no even/odd interpolation
 // phase can paint a 2px grid on tonal transitions. The UV is normalized
 // against the full-res input size so half-res texel k covers exactly the
-// output block [2k, 2k+2). mapNorm is a per-frame CPU guard that scales the
-// whole map up whenever the exposure fusion would otherwise let LTM darken the
-// frame globally (its mean gain below 1); it never scales the map down, so the
-// shadow lift in genuinely dark scenes is preserved.
+// output block [2k, 2k+2).
 float getGain(ivec2 centerPos){
     ivec2 inputSize = textureSize(InputBuffer, 0);
     ivec2 blockBase = (centerPos / 2) * 2;
     ivec2 blockCenter = blockBase + ivec2(1, 1);
     vec2 uv = vec2(blockCenter) / vec2(inputSize);
-    return texture(FusionMap, uv).r * FUSIONGAIN * mapNorm;
+    return texture(FusionMap, uv).r * FUSIONGAIN;
 }
 ivec2 clampInputPos(ivec2 pos, ivec2 inputSize) {
     return clamp(pos, ivec2(0), inputSize - ivec2(1));
