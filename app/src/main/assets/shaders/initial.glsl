@@ -281,37 +281,32 @@ void main() {
     float momentX = 0.0, momentY = 0.0, momentX2 = 0.0, momentXY = 0.0;
     float ws = 0.0;
     float localMinGain = FUSIONCAP;
-    float localMaxGain = 0.25;
+    float localMaxGain = FUSIONFLOOR;
     const float sigma = 2.0;
     const float sigmaSq2 = 2.0 * sigma * sigma;
     const float lumaSigma = LTMLUMASIGMA;
     const float lumaSigmaSq2 = 2.0 * lumaSigma * lumaSigma;
     ivec2 inputSize = textureSize(InputBuffer, 0);
     float centerLightness = luminocity(sRGB);
-    // Spatial-only window statistics for the halo/shadow gates, never the
-    // range-weighted mean: range weighting locks onto the center pixel's
-    // coherent structure and prints a per-pixel grid on gradients. The bright
-    // tail is a smooth mean+std proxy, never the raw window max.
-    float gateLumaSum = 0.0;
-    float gateLumaSqSum = 0.0;
-    float gateLumaWs = 0.0;
     for (int i = -2; i <= 2; i++) {
         for (int j = -2; j <= 2; j++) {
-            vec2 offset = vec2(float(i), float(j));
             float lightness = luminocity(texelFetch(InputBuffer,
                                                     clampInputPos(xy + ivec2(i, j), inputSize),
                                                     0).rgb);
             float spatialWeight = exp(-float(i*i + j*j) / sigmaSq2);
-            gateLumaSum += lightness * spatialWeight;
-            gateLumaSqSum += lightness * lightness * spatialWeight;
-            gateLumaWs += spatialWeight;
             // Block-aligned map sample: every tap inside the same 2x2 block
             // reads the same texel, so the moments carry no even/odd phase.
             float gain = getGain(xy + ivec2(i, j));
-            localMinGain = min(localMinGain, gain);
-            localMaxGain = max(localMaxGain, gain);
             float lumaDelta = lightness - centerLightness;
             float rangeWeight = exp(-(lumaDelta * lumaDelta) / lumaSigmaSq2);
+            // The overshoot clamp must only see gains from THIS side of a
+            // tonal edge. Min/max over all taps admits the far side's gains
+            // into the window, and the refit is then allowed to overshoot
+            // toward them at the boundary - that overshoot is the halo.
+            if (rangeWeight > 0.5) {
+                localMinGain = min(localMinGain, gain);
+                localMaxGain = max(localMaxGain, gain);
+            }
             float w = spatialWeight * rangeWeight;
             momentX += lightness * w;
             momentY += gain * w;
@@ -330,23 +325,22 @@ void main() {
     float a = clamp(covXY / (guideVariance + varianceRegularizer), -FUSIONCAP, FUSIONCAP);
     float guidedGain = meanY + (a * (centerLightness - meanX)) * LTMREFIT;
     tonemapGain = guidedGain;
-    // The affine refit must not overshoot the map values actually present in
-    // this window: that is exactly how over/under-shoots (halos) appear.
+    // The affine refit must not overshoot the same-side map values actually
+    // present in this window: that is exactly how over/under-shoots (halos)
+    // appear.
     tonemapGain = clamp(tonemapGain, localMinGain, localMaxGain);
-    float gateLuma = gateLumaSum / gateLumaWs;
-    float gateVar = max(gateLumaSqSum / gateLumaWs - gateLuma * gateLuma, 0.0);
-    float gateStd = sqrt(max(gateVar, 0.0));
-    float brightTail = gateLuma + 1.5 * gateStd;
-    float haloGate = smoothstep(brightTail * 0.85, max(brightTail, 1e-4), gateLuma);
-    float shadowFloor = smoothstep(0.15, 0.45, gateLuma);
-    float highlightMask = haloGate * shadowFloor;
-    // The shadow gate caps the gain at FUSIONGAIN so shadows are not
-    // over-boosted into the noise floor, and the wide shadowFloor band spreads
-    // the release gradually so the plateau fades instead of printing a bright
-    // rim at the shadow boundary. The cap itself must stay a monotonic min():
-    // a "smooth" cap would dip below FUSIONGAIN on the highlight side to rejoin
-    // the uncapped gain, which inverts and posterizes highlight-adjacent pixels.
-    tonemapGain = mix(min(tonemapGain, FUSIONGAIN), tonemapGain, highlightMask);
+    // Per-pixel gain ceiling driven by the CENTER pixel's own luma, not by
+    // window statistics. A spatial window straddles tonal edges, so a mask
+    // computed from it releases the shadow cap over a multi-pixel band around
+    // the edge - and that partially-released band is the bright rim on dark
+    // branches against the sky. A smooth function of the center luma follows
+    // the image's own edge pixel-exactly: dark pixels stay capped, bright
+    // pixels are released, and the gain transition coincides with the visible
+    // luminance step that masks it. On smooth gradients the ceiling varies
+    // smoothly with luma, so no per-pixel grid can form.
+    float gainCeiling = mix(FUSIONGAIN, FUSIONCAP,
+            smoothstep(0.15, 0.45, centerLightness));
+    tonemapGain = min(tonemapGain, gainCeiling);
     tonemapGain = clamp(tonemapGain, 0.25, FUSIONCAP);
     #endif
     vec4 gains = textureBicubicHardware(GainMap, vec2(xy)/vec2(textureSize(InputBuffer, 0)));
