@@ -9,33 +9,20 @@ uniform sampler2D IntenseCurve;
 uniform sampler2D GainMap;
 uniform sampler2D HSVMap;
 uniform sampler2D PostLut;
-//uniform vec3 neutralPoint;
-//uniform float saturation0;
-//uniform float saturation;
 #define CCT 0
-//Color mat's
-uniform mat3 sensorToIntermediate; // Color transform from XYZ to a wide-gamut colorspace
+uniform mat3 sensorToIntermediate;
 #if CCT != 1
-uniform mat3 intermediateToSRGB; // Color transform from wide-gamut colorspace to sRGB
+uniform mat3 intermediateToSRGB;
 #endif
-uniform vec4 toneMapCoeffs; // Coefficients for a polynomial tonemapping curve
+uniform vec4 toneMapCoeffs;
+uniform float mapNorm;
 uniform ivec4 activeSize;
-
-//#define CUBE0 (10.0)
-//#define CUBE1 (10.0)
-//#define CUBE2 (10.0)
 #if CCT == 1
 uniform mat3 CUBE0;
 uniform mat3 CUBE1;
 uniform mat3 CUBE2;
 #endif
-out vec3 Output;
-//#define x1 2.8114
-//#define x2 -3.5701
-//#define x3 1.6807
-//CSEUS Gamma
-//1.0 0.86 0.76 0.57 0.48 0.0 0.09 0.3
-//0.999134635 0.97580 0.94892548 0.8547916 0.798550103 0.0000000 0.29694557 0.625511972
+out vec4 Output;
 #define INSIZE 1,1
 #define NEUTRALPOINT 0.0,0.0,0.0
 #define SATURATION 0.0
@@ -56,7 +43,8 @@ out vec3 Output;
 #define SATURATIONRED 0.7
 #define EPS (0.0008)
 #define FUSIONGAIN 1.0
-#define FUSION 0
+#define FUSION 1
+#define ULTRAHDR 1
 #define luminocity(x) dot(x.rgb, vec3(0.299, 0.587, 0.114))
 #define MINP 1.0
 #define NOISEO 0.0
@@ -71,40 +59,39 @@ out vec3 Output;
 #define FUSIONNORM 64.0
 #define VIGNETTE 0.0
 #define LTMMIX 0.0
+#define FUSIONCAP 8.0
+#define FUSIONFLOOR 0.25
+// Range gate for the guided-filter refit and strength of the affine refit
+// deviation. A wider gate lets near-edge taps contribute so the gain field
+// fades gradually across tonal edges (the shadow plateau boundary stops
+// printing a bright rim), and a sub-unity refit strength pulls each pixel's
+// gain toward the window's smoothed mean gain, which both softens that
+// boundary and keeps the refit insensitive to the center pixel's luma (no
+// per-pixel grid on gradients).
+#define LTMLUMASIGMA 0.16
+#define LTMREFIT 0.45
 #import coords
 #import interpolation
 #import gaussian
 
-
 vec3 postlookup(in vec3 textureColor) {
     textureColor = clamp(textureColor, 0.0, 1.0);
-
-    //0.0 - 63.0
-    highp float blueColor = textureColor.b * (float(POSTLUTSIZE)-1.0); //63.0;
-
+    highp float blueColor = textureColor.b * (float(POSTLUTSIZE)-1.0);
     highp vec2 quad1;
     quad1.y = floor(floor(blueColor) / POSTLUTSIZETILES);
     quad1.x = floor(blueColor) - (quad1.y * POSTLUTSIZETILES);
-
     highp vec2 quad2;
     quad2.y = floor(ceil(blueColor) / POSTLUTSIZETILES);
     quad2.x = ceil(blueColor) - (quad2.y * POSTLUTSIZETILES);
-
     highp vec2 texPos1;
     texPos1.x = (quad1.x / POSTLUTSIZETILES) + 0.5/(POSTLUTSIZE*POSTLUTSIZETILES) + ((1.0/(POSTLUTSIZETILES) - 1.0/(POSTLUTSIZE*POSTLUTSIZETILES)) * textureColor.r);
     texPos1.y = (quad1.y / POSTLUTSIZETILES) + 0.5/(POSTLUTSIZE*POSTLUTSIZETILES) + ((1.0/(POSTLUTSIZETILES) - 1.0/(POSTLUTSIZE*POSTLUTSIZETILES)) * textureColor.g);
-
     highp vec2 texPos2;
     texPos2.x = (quad2.x / POSTLUTSIZETILES) + 0.5/(POSTLUTSIZE*POSTLUTSIZETILES) + ((1.0/(POSTLUTSIZETILES) - 1.0/(POSTLUTSIZE*POSTLUTSIZETILES)) * textureColor.r);
     texPos2.y = (quad2.y / POSTLUTSIZETILES) + 0.5/(POSTLUTSIZE*POSTLUTSIZETILES) + ((1.0/(POSTLUTSIZETILES) - 1.0/(POSTLUTSIZE*POSTLUTSIZETILES)) * textureColor.g);
-
-    //Tile 1
     highp vec3 newColor1 = texture(PostLut, texPos1).rgb;
-    //Tile 2
     highp vec3 newColor2 = texture(PostLut, texPos2).rgb;
-
-    highp vec3 newColor = (mix(newColor1, newColor2, fract(blueColor)));
-    return newColor;
+    return (mix(newColor1, newColor2, fract(blueColor)));
 }
 vec3 tricubiclookup(in vec3 xyzIn){
     float res = float(POSTLUTSIZE)-1.0;
@@ -114,196 +101,57 @@ vec3 tricubiclookup(in vec3 xyzIn){
     return postlookup((inv-.5) / res);
 }
 
-float gammaEncode(float x) {
-    //return 1.055 * sqrt(x+EPS) - 0.055;
-    return (GAMMAX1*x+GAMMAX2*x*x+GAMMAX3*x*x*x);
-}
-float gammaEncode0(float x) {
-return x <= 0.0031308f ? x * 12.92f : 1.055f * pow(x, 0.4166667f) - 0.055f;
-}
-
-float gammaEncode2(float x) {
-    //return 1.055 * sqrt(x+EPS) - 0.055;
-    return texture(GammaCurve,vec2(x - 1.0/1024.0,0.5)).r;
-}
-
-//Apply Gamma correction
-vec3 gammaCorrectPixel(vec3 x) {
-    //float br = (x.r+x.g+x.b)/3.0;
-    //x/=br;
-    //return x*(GAMMAX1*br+GAMMAX2*br*br+GAMMAX3*br*br*br);
-    return (GAMMAX1*x+GAMMAX2*x*x+GAMMAX3*x*x*x);
-}
-
+float gammaEncode(float x) { return (GAMMAX1*x+GAMMAX2*x*x+GAMMAX3*x*x*x); }
+float gammaEncode0(float x) { return x <= 0.0031308f ? x * 12.92f : 1.055f * pow(x, 0.4166667f) - 0.055f; }
+float gammaEncode2(float x) { return texture(GammaCurve,vec2(x - 1.0/1024.0,0.5)).r; }
+vec3 gammaCorrectPixel(vec3 x) { return (GAMMAX1*x+GAMMAX2*x*x+GAMMAX3*x*x*x); }
 vec3 gammaCorrectPixel2(vec3 rgb) {
     rgb.r = mix(gammaEncode(rgb.r),gammaEncode2(rgb.r),min(rgb.r*9.0,1.0));
     rgb.g = mix(gammaEncode(rgb.g),gammaEncode2(rgb.g),min(rgb.g*9.0,1.0));
     rgb.b = mix(gammaEncode(rgb.b),gammaEncode2(rgb.b),min(rgb.b*9.0,1.0));
-    //rgb = gammaCorrectPixel(rgb);
     return rgb;
 }
 vec3 lookup(in vec3 textureColor) {
     textureColor = clamp(textureColor, 0.0, 1.0);
-
     highp float blueColor = textureColor.b * 63.0;
-
-    highp vec2 quad1;
-    quad1.y = floor(floor(blueColor) / 8.0);
-    quad1.x = floor(blueColor) - (quad1.y * 8.0);
-
-    highp vec2 quad2;
-    quad2.y = floor(ceil(blueColor) / 8.0);
-    quad2.x = ceil(blueColor) - (quad2.y * 8.0);
-
+    highp vec2 quad1; quad1.y = floor(floor(blueColor) / 8.0); quad1.x = floor(blueColor) - (quad1.y * 8.0);
+    highp vec2 quad2; quad2.y = floor(ceil(blueColor) / 8.0); quad2.x = ceil(blueColor) - (quad2.y * 8.0);
     highp vec2 texPos1;
     texPos1.x = (quad1.x * 0.125) + 0.5/512.0 + ((0.125 - 1.0/512.0) * textureColor.r);
     texPos1.y = (quad1.y * 0.125) + 0.5/512.0 + ((0.125 - 1.0/512.0) * textureColor.g);
-
     highp vec2 texPos2;
     texPos2.x = (quad2.x * 0.125) + 0.5/512.0 + ((0.125 - 1.0/512.0) * textureColor.r);
     texPos2.y = (quad2.y * 0.125) + 0.5/512.0 + ((0.125 - 1.0/512.0) * textureColor.g);
-
     highp vec3 newColor1 = texture(LookupTable, texPos1).rgb;
     highp vec3 newColor2 = texture(LookupTable, texPos2).rgb;
-
-    highp vec3 newColor = (mix(newColor1, newColor2, fract(blueColor)));
-    return newColor;
+    return (mix(newColor1, newColor2, fract(blueColor)));
 }
 #define TONEMAP_GAMMA (1.5)
-float tonemapSin(float ch) {
-    return ch < 0.0001f
-    ? ch
-    : 0.5f - 0.5f * cos(pow(ch, 1.0/TONEMAP_GAMMA) * PI);
-}
-
-vec2 tonemapSin(vec2 ch) {
-    return vec2(tonemapSin(ch.x), tonemapSin(ch.y));
-}
-/*
-vec3 tonemap(vec3 rgb, float gain) {
-    vec3 sorted = rgb;
-
-    float tmp;
-    int permutation = 0;
-
-    // Sort the RGB channels by value
-    if (sorted.z < sorted.y) {
-        tmp = sorted.z;
-        sorted.z = sorted.y;
-        sorted.y = tmp;
-        permutation |= 1;
-    }
-    if (sorted.y < sorted.x) {
-        tmp = sorted.y;
-        sorted.y = sorted.x;
-        sorted.x = tmp;
-        permutation |= 2;
-    }
-    if (sorted.z < sorted.y) {
-        tmp = sorted.z;
-        sorted.z = sorted.y;
-        sorted.y = tmp;
-        permutation |= 4;
-    }
-
-    vec2 minmax;
-    minmax.x = sorted.x;
-    minmax.y = sorted.z;
-
-    // Apply tonemapping curve to min, max RGB channel values
-    //vec4 toneMapCoeffs = vec4(-0.7836f, 0.8469f, 0.943f, 0.0209f);
-    minmax = pow(minmax, vec2(3.f)) * toneMapCoeffs.x +
-    pow(minmax, vec2(2.f)) * toneMapCoeffs.y +
-    minmax * toneMapCoeffs.z +
-    toneMapCoeffs.w;
-    minmax *= gain;
-    //minmax.r = texture(TonemapTex,vec2(minmax.r,0.5f)).r;
-    //minmax.g = texture(TonemapTex,vec2(minmax.g,0.5f)).r;
-
-    //minmax = mix(minmax, minmaxsin, 0.9f);
-
-    // Rescale middle value
-    float newMid;
-    if (sorted.z == sorted.x) {
-        newMid = minmax.y;
-    } else {
-        float yprog = (sorted.y - sorted.x) / (sorted.z - sorted.x);
-        newMid = minmax.x + (minmax.y - minmax.x) * yprog;
-    }
-
-    vec3 finalRGB;
-    switch (permutation) {
-        case 0: // b >= g >= r
-        finalRGB.r = minmax.x;
-        finalRGB.g = newMid;
-        finalRGB.b = minmax.y;
-        break;
-        case 1: // g >= b >= r
-        finalRGB.r = minmax.x;
-        finalRGB.b = newMid;
-        finalRGB.g = minmax.y;
-        break;
-        case 2: // b >= r >= g
-        finalRGB.g = minmax.x;
-        finalRGB.r = newMid;
-        finalRGB.b = minmax.y;
-        break;
-        case 3: // g >= r >= b
-        finalRGB.b = minmax.x;
-        finalRGB.r = newMid;
-        finalRGB.g = minmax.y;
-        break;
-        case 6: // r >= b >= g
-        finalRGB.g = minmax.x;
-        finalRGB.b = newMid;
-        finalRGB.r = minmax.y;
-        break;
-        case 7: // r >= g >= b
-        finalRGB.b = minmax.x;
-        finalRGB.g = newMid;
-        finalRGB.r = minmax.y;
-        break;
-    }
-    return finalRGB;
-}*/
+float tonemapSin(float ch) { return ch < 0.0001f ? ch : 0.5f - 0.5f * cos(pow(ch, 1.0/TONEMAP_GAMMA) * PI); }
+vec2 tonemapSin(vec2 ch) { return vec2(tonemapSin(ch.x), tonemapSin(ch.y)); }
 
 vec3 tonemap(vec3 rgb, float gain) {
-    float r = rgb.r;
-    float g = rgb.g;
-    float b = rgb.b;
-
+    float r = rgb.r; float g = rgb.g; float b = rgb.b;
     float min_val = min(r, min(g, b));
     float max_val = max(r, max(g, b));
     float mid_val = dot(rgb, vec3(1.0)) - min_val - max_val;
-
     vec2 minmax_in = vec2(min_val, max_val);
     vec2 minmax = minmax_in * minmax_in * minmax_in * toneMapCoeffs.x +
         minmax_in * minmax_in * toneMapCoeffs.y +
-        minmax_in * toneMapCoeffs.z +
-        toneMapCoeffs.w;
+        minmax_in * toneMapCoeffs.z + toneMapCoeffs.w;
     minmax *= gain;
-
-    float new_min = minmax.x;
-    float new_max = minmax.y;
-
+    float new_min = minmax.x; float new_max = minmax.y;
     float denom = max_val - min_val;
     float yprog = (mid_val - min_val) / (denom + 1e-10);
     float new_mid = new_min + (new_max - new_min) * yprog;
-
-    // Branchless assignment using nested mix for each channel
     float new_r = mix(mix(new_mid, new_max, float(r == max_val)), new_min, float(r == min_val));
     float new_g = mix(mix(new_mid, new_max, float(g == max_val)), new_min, float(g == min_val));
     float new_b = mix(mix(new_mid, new_max, float(b == max_val)), new_min, float(b == min_val));
-
     return vec3(new_r, new_g, new_b);
 }
 
 #define TONEMAP_CONTRAST (1.3)
-vec3 brightnessContrast(vec3 value, float brightness, float contrast)
-{
-    return (value - 0.5) * contrast + 0.5 + brightness;
-}
-// Source: https://lolengine.net/blog/2013/07/27/rgb-to-hsv-in-glsl
+vec3 brightnessContrast(vec3 value, float brightness, float contrast){ return (value - 0.5) * contrast + 0.5 + brightness; }
 vec3 rgb2hsv(vec3 c) {
     vec4 K = vec4(0.f, -1.f / 3.f, 2.f / 3.f, -1.f);
     vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
@@ -318,11 +166,10 @@ vec3 hsv2rgb(vec3 c) {
 }
 vec3 hsv2rgb_smooth( in vec3 c ) {
     vec3 rgb = clamp( abs(mod(c.x*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0, 0.0, 1.0 );
-    rgb = rgb*rgb*(3.0-2.0*rgb); // cubic smoothing
+    rgb = rgb*rgb*(3.0-2.0*rgb);
     return c.z * mix( vec3(1.0), rgb, c.y);
 }
 const float eps = 0.0000001;
-
 vec3 hsl2rgb( in vec3 c ) {
     vec3 rgb = clamp( abs(mod(c.x*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0, 0.0, 1.0 );
     return c.z + c.y * (rgb-0.5)*(1.0-abs(2.0*c.z-1.0));
@@ -332,59 +179,27 @@ vec3 rgb2hsl( vec3 col ){
     float maxc = max( col.r, max(col.g, col.b) );
     vec3  mask = step(col.grr,col.rgb) * step(col.bbg,col.rgb);
     vec3 h = mask * (vec3(0.0,2.0,4.0) + (col.gbr-col.brg)/(maxc-minc + eps)) / 6.0;
-    return vec3( fract( 1.0 + h.x + h.y + h.z ),              // H
-    (maxc-minc)/(1.0-abs(minc+maxc-1.0) + eps),  // S
-    (minc+maxc)*0.5 );                           // L
+    return vec3( fract( 1.0 + h.x + h.y + h.z ), (maxc-minc)/(1.0-abs(minc+maxc-1.0) + eps), (minc+maxc)*0.5 );
 }
-
 float reinhard_mono(float v, float max_white) {
     float numerator = v * (float(1.0f) + (v / float(max_white * max_white)));
     return numerator / (float(1.0f) + v);
 }
-
 vec3 saturate(vec3 rgb, float sat2, float sat) {
-    float r = rgb.r;
-    float g = rgb.g;
-    float b = rgb.b;
-    float br = (r+g+b)/3.0;
+    float br = (rgb.r+rgb.g+rgb.b)/3.0;
     float dfsat = mix(sat2,sat,br*br);
     vec3 hsv = rgb2hsv(vec3(rgb.r,rgb.g,rgb.b));
-    /*if(hsv.g < 0.5-0.0){
-        hsv.g *= mix(1.0,dfsat,hsv.g/(0.5-0.0));
-    } else
-    if(hsv.g > 0.5+0.0){
-        hsv.g *= mix(dfsat,1.0,(0.7-hsv.g)/(0.5-0.0));
-    }
-    else
-    //hsv.g *= mix(dfsat,1.0,abs(hsv.g-0.5)/0.1);
-    hsv.g *= dfsat;*/
-    //hsv.g *= dfsat;
     hsv.g = reinhard_mono(hsv.g*dfsat, max(1.0,dfsat*0.7));
-    //hsv.g *= SATURATIONC+unscaledGaussian(abs(hsv.g),SATURATIONGAUSS)*(dfsat*1.07-1.0);
     rgb = hsv2rgb(hsv);
     rgb.r = mix((rgb.r+br)/2.0,rgb.r,SATURATIONRED);
     return rgb;
 }
-#define TONEMAPSWITCH (0.05)
-#define TONEMAPAMP (1.0)
+vec3 reinhard_extended(vec3 v, float max_white){ vec3 n = v * (vec3(1.0f) + (v / vec3(max_white * max_white))); return n / (vec3(1.0f) + v); }
+vec3 reinhard_extended(vec3 v, vec3 max_white){ vec3 n = v * (vec3(1.0f) + (v / vec3(max_white * max_white))); return n / (vec3(1.0f) + v); }
+float reinhard_extended(float v, float max_white){ float n = v * (float(1.0f) + (v / float(max_white * max_white))); return n / (float(1.0f) + v); }
 
-vec3 reinhard_extended(vec3 v, float max_white){
-    vec3 numerator = v * (vec3(1.0f) + (v / vec3(max_white * max_white)));
-    return numerator / (vec3(1.0f) + v);
-}
-
-vec3 reinhard_extended(vec3 v, vec3 max_white){
-    vec3 numerator = v * (vec3(1.0f) + (v / vec3(max_white * max_white)));
-    return numerator / (vec3(1.0f) + v);
-}
-float reinhard_extended(float v, float max_white){
-    float numerator = v * (float(1.0f) + (v / float(max_white * max_white)));
-    return numerator / (float(1.0f) + v);
-}
-
-vec3 applyColorSpace(vec3 pRGB,float tonemapGain, float gainsVal){
+vec3 applyColorSpace(vec3 pRGB, float tonemapGain, float gainsVal, out float linearLum){
     vec3 neutralPoint = vec3(NEUTRALPOINT);
-    //pRGB = clamp(reinhard_extended(pRGB*tonemapGain,max(1.0,tonemapGain)), vec3(0.0), neutralPoint);
     #if CCT == 0
     mat3 corr = intermediateToSRGB;
     #endif
@@ -392,153 +207,164 @@ vec3 applyColorSpace(vec3 pRGB,float tonemapGain, float gainsVal){
     mat3 corr;
     float br0 = ((pRGB.r+pRGB.g+pRGB.b))/(neutralPoint.r+neutralPoint.g+neutralPoint.b);
     if(br0 > 0.5){
-        mat3 cub1 = mat3(CUBE1);
-        mat3 cub2 = mat3(CUBE2);
+        mat3 cub1 = mat3(CUBE1); mat3 cub2 = mat3(CUBE2);
         corr = cub1*(1.0-(br0-0.5)*2.0) + cub2*((br0-0.5)*2.0);
     } else {
-        mat3 cub0 = mat3(CUBE0);
-        mat3 cub1 = mat3(CUBE1);
+        mat3 cub0 = mat3(CUBE0); mat3 cub1 = mat3(CUBE1);
         corr = cub0*(1.0-(br0-0.25)*4.0) + cub1*((br0-0.25)*4.0);
     }
     #endif
     pRGB = corr*sensorToIntermediate*(pRGB*neutralPoint);
     vec3 pHSV = rgb2hsl(pRGB);
     #if USE_HSV == 1
-
     vec3 modHSV = texture(HSVMap, vec2(pHSV.y,pHSV.x)).rgb;
-    pHSV.x += modHSV.x/2.0;
-    pHSV.y *= modHSV.y;
-    pRGB.z *= modHSV.z;
-    pHSV.x = mod(pHSV.x,1.0);
-    pRGB = hsl2rgb(pHSV);
+    pHSV.x += modHSV.x/2.0; pHSV.y *= modHSV.y; pRGB.z *= modHSV.z;
+    pHSV.x = mod(pHSV.x,1.0); pRGB = hsl2rgb(pHSV);
     #endif
     float br = (pRGB.r+pRGB.g+pRGB.b)/3.0;
-    //pRGB /= br;
-    //float vignetteFactor = mix(0.0,VIGNETTE,clamp(br*100.0 - 0.01,0.0,1.0));
     float noise = sqrt(NOISES + NOISEO + 1e-8);
-    //float vignetteFactor = smoothstep(0.0,min(noise, 0.1),br)*VIGNETTE;
     float vignetteFactor = (br*br/(br*br+noise*noise))*VIGNETTE;
     gainsVal = mix(float(1.0), gainsVal, 1.0);
-    //br = clamp(reinhard_extended(br*gainsVal,max(1.0,gainsVal)),0.0,1.0);
-    //br = clamp(reinhard_extended(br*tonemapGain,max(1.0,tonemapGain)),0.0,1.0);
-    pRGB = clamp(pRGB*mix(tonemapGain,1.0,LTMMIX), 0.0,1.0);
-    //pRGB = clamp(reinhard_extended(pRGB*tonemapGain,max(1.0,tonemapGain)),vec3(0.0),vec3(1.0));
-
+    // Apply the LTM gain directly to the single color-transformed signal. The
+    // earlier LP/HP split blurred the RAW InputBuffer but subtracted it from
+    // this TRANSFORMED signal, so the detail term contained a spurious color
+    // difference that was added back and slammed saturation. One consistent
+    // signal has no such defect.
+    vec3 pRGBBoosted = pRGB*mix(tonemapGain,1.0,LTMMIX);
+    linearLum = min(luminocity(pRGBBoosted), 16.0);
+    pRGB = clamp(reinhard_extended(pRGBBoosted, max(1.0, tonemapGain)), 0.0, 1.0);
     pRGB = clamp(reinhard_extended(pRGB*gainsVal,max(1.0,gainsVal)),vec3(0.0),vec3(1.0));
-    //pRGB = clamp(pRGB*tonemapGain*gainsVal,vec3(0.0),vec3(1.0));
-
-    //ISO tint correction
-    //pRGB = mix(vec3(pRGB.r*0.99*(TINT2),pRGB.g*(TINT),pRGB.b*1.025*(TINT2)),pRGB,clamp(br*10.0,0.0,1.0));
-
-    //pRGB = saturate(pRGB,br);
-
     pRGB = gammaCorrectPixel2(pRGB);
     pRGB = tonemap(pRGB, mix(1.0,tonemapGain,LTMMIX));
-    pRGB = mix(pRGB*pRGB*pRGB*TONEMAPX3 + pRGB*pRGB*TONEMAPX2 + pRGB*TONEMAPX1,pRGB,min(pRGB*0.8+0.55,1.0));
-
+    pRGB = mix(pRGB*pRGB*pRGB*TONEMAPX3 + pRGB*pRGB*TONEMAPX2 + pRGB*TONEMAPX1, pRGB, min(pRGB*0.8+0.55,1.0));
     return pRGB;
 }
 
-float getGain(vec2 coordsShift){
-    vec2 fusionSize = vec2(textureSize(FusionMap, 0));
-    vec2 inputSize = vec2(textureSize(InputBuffer, 0));
-    vec2 baseCoord = (gl_FragCoord.xy + coordsShift) / inputSize;
-    float ingain = texture(FusionMap, baseCoord).r;
-    //float ingain = texelFetch(FusionMap, xy, 0).r;
-    /*if(ingain > 0.0){
-        ingain = 1.0/ingain;
-    } else ingain = -ingain;*/
-    return ingain*FUSIONGAIN;
+// FusionMap carries the bounded fused/base LTM gain ratio in .r, notch-
+// filtered edge-aware in fusionmap.glsl so it contains no texel-scale pattern.
+// getGain() samples it once per 2x2 output block, at the block center, so all
+// four pixels in the block share one gain prior and no even/odd interpolation
+// phase can paint a 2px grid on tonal transitions. The UV is normalized
+// against the full-res input size so half-res texel k covers exactly the
+// output block [2k, 2k+2). mapNorm is a per-frame CPU guard that scales the
+// whole map up whenever the exposure fusion would otherwise let LTM darken the
+// frame globally (its mean gain below 1); it never scales the map down, so the
+// shadow lift in genuinely dark scenes is preserved.
+float getGain(ivec2 centerPos){
+    ivec2 inputSize = textureSize(InputBuffer, 0);
+    ivec2 blockBase = (centerPos / 2) * 2;
+    ivec2 blockCenter = blockBase + ivec2(1, 1);
+    vec2 uv = vec2(blockCenter) / vec2(inputSize);
+    return texture(FusionMap, uv).r * FUSIONGAIN * mapNorm;
 }
-float getLm(ivec2 coordsShift){
-    vec3 inrgb = texelFetch(InputBuffer, coordsShift, 0).rgb;
-    return inrgb.r+inrgb.g+inrgb.b;
+ivec2 clampInputPos(ivec2 pos, ivec2 inputSize) {
+    return clamp(pos, ivec2(0), inputSize - ivec2(1));
 }
-
-float convSin(float x){
-    return 0.5 + 0.5*sin((2.0*x-1.0) * PI/2.0);
-}
-
-vec3 contrastSin(vec3 value, float contrast)
-{
-    vec3 contr = vec3(convSin(value.r),convSin(value.g),convSin(value.b));
-    return mix(value,contr,contrast);
-}
-
-float aces(float x) {
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
+float convSin(float x){ return 0.5 + 0.5*sin((2.0*x-1.0) * PI/2.0); }
+vec3 contrastSin(vec3 value, float contrast){ vec3 contr = vec3(convSin(value.r),convSin(value.g),convSin(value.b)); return mix(value,contr,contrast); }
+float aces(float x) { const float a=2.51,b=0.03,c=2.43,d=0.59,e=0.14; return clamp((x*(a*x+b))/(x*(c*x+d)+e),0.0,1.0); }
 
 void main() {
     ivec2 xy = ivec2(gl_FragCoord.xy);
     xy = mirrorCoords(xy,activeSize);
     vec3 sRGB = texelFetch(InputBuffer, xy, 0).rgb;
-    vec3 t;
-    //float tonemapGain = textureBicubic(FusionMap, vec2(gl_FragCoord.xy)/vec2(textureSize(InputBuffer, 0))).r*50.0;
-
     float tonemapGain = 1.f;
     #if FUSION == 1
-    // Guided upsampling with Gaussian-weighted linear model
-    //float momentX = 0.0, momentY = 0.0, momentX2 = 0.0, momentXY = 0.0;
-    vec4 moments = vec4(0.0);
-    const float sigma = 1.2;
+    // Edge-aware full-res application of the low-res gain map (guided filter).
+    //
+    // The map is sampled once per 2x2 output block (getGain above), so the
+    // gain field carries no even/odd interpolation phase. A local affine gain
+    // model gain = a*luma + b (He et al.) is then re-fit against full-res luma
+    // in a 5x5 window. The window average washes out any residual pyramid
+    // phase ripple left in the map (the grid on gradients), while the range
+    // gate keeps the model on one side of a tonal edge (no halo). Each tap
+    // reads the map at its own block center, so the windowed moments still see
+    // the map's spatial variation without alternating gain phase between
+    // even/odd pixels.
+    float momentX = 0.0, momentY = 0.0, momentX2 = 0.0, momentXY = 0.0;
+    float ws = 0.0;
+    float localMinGain = FUSIONCAP;
+    float localMaxGain = 0.25;
+    const float sigma = 2.0;
     const float sigmaSq2 = 2.0 * sigma * sigma;
+    const float lumaSigma = LTMLUMASIGMA;
+    const float lumaSigmaSq2 = 2.0 * lumaSigma * lumaSigma;
+    ivec2 inputSize = textureSize(InputBuffer, 0);
+    float centerLightness = luminocity(sRGB);
+    // Spatial-only window statistics for the halo/shadow gates, never the
+    // range-weighted mean: range weighting locks onto the center pixel's
+    // coherent structure and prints a per-pixel grid on gradients. The bright
+    // tail is a smooth mean+std proxy, never the raw window max.
+    float gateLumaSum = 0.0;
+    float gateLumaSqSum = 0.0;
+    float gateLumaWs = 0.0;
     for (int i = -2; i <= 2; i++) {
         for (int j = -2; j <= 2; j++) {
-            // Average lightness over 2x2 block to match FusionMap resolution
-            vec2 offset = vec2(float(i*2), float(j*2));
-            float lightness = dot(texelFetch(InputBuffer, xy + ivec2(i, j), 0).rgb, vec3(1.0/3.0));
-            float gain = texelFetch(FusionMap, (xy + ivec2(i, j))/2, 0).r;//getGain(offset);
-
-            //momentX += lightness;
-            //momentY += gain;
-            //momentX2 += lightness * lightness;
-            //momentXY += lightness * gain;
-            moments += vec4(lightness, gain, lightness * lightness, lightness * gain);
+            vec2 offset = vec2(float(i), float(j));
+            float lightness = luminocity(texelFetch(InputBuffer,
+                                                    clampInputPos(xy + ivec2(i, j), inputSize),
+                                                    0).rgb);
+            float spatialWeight = exp(-float(i*i + j*j) / sigmaSq2);
+            gateLumaSum += lightness * spatialWeight;
+            gateLumaSqSum += lightness * lightness * spatialWeight;
+            gateLumaWs += spatialWeight;
+            // Block-aligned map sample: every tap inside the same 2x2 block
+            // reads the same texel, so the moments carry no even/odd phase.
+            float gain = getGain(xy + ivec2(i, j));
+            localMinGain = min(localMinGain, gain);
+            localMaxGain = max(localMaxGain, gain);
+            float lumaDelta = lightness - centerLightness;
+            float rangeWeight = exp(-(lumaDelta * lumaDelta) / lumaSigmaSq2);
+            float w = spatialWeight * rangeWeight;
+            momentX += lightness * w;
+            momentY += gain * w;
+            momentX2 += lightness * lightness * w;
+            momentXY += lightness * gain * w;
+            ws += w;
         }
     }
-    float invWs = 1.0 / 25.0;
-    moments *= invWs; // Normalize by the number of samples (5x5)
-    float meanX = moments.x;
-    float meanY = moments.y;
-    float covXY = moments.w - meanX * meanY;
-    float varX = moments.z - meanX * meanX;
-    // Handle zero variance case with epsilon for stability
-    float a = covXY / (max(varX, 0.0) + 3e-04);
-    vec2 gainAB = vec2(a, meanY - a * meanX);
-    //vec2 gainAB = texture(FusionMap, vec2(gl_FragCoord.xy)/vec2(textureSize(InputBuffer, 0))).rg * FUSIONGAIN;
-    tonemapGain =  gainAB.r * ((luminocity(sRGB))) + gainAB.g;
-    //tonemapGain = mix(1.0,tonemapGain,texture(IntenseCurve, vec2(dot(sRGB.rgb,vec3(1.0/3.0)),0.0)).r);
-    //tonemapGain = max(tonemapGain, 0.5);
+    float invWs = 1.0 / ws;
+    float meanX = momentX * invWs;
+    float meanY = momentY * invWs;
+    float covXY = momentXY * invWs - meanX * meanY;
+    float varX = momentX2 * invWs - meanX * meanX;
+    float guideVariance = max(varX, 0.0);
+    float varianceRegularizer = 0.0001 + 0.001 * max(meanX, 0.01);
+    float a = clamp(covXY / (guideVariance + varianceRegularizer), -FUSIONCAP, FUSIONCAP);
+    float guidedGain = meanY + (a * (centerLightness - meanX)) * LTMREFIT;
+    tonemapGain = guidedGain;
+    // The affine refit must not overshoot the map values actually present in
+    // this window: that is exactly how over/under-shoots (halos) appear.
+    tonemapGain = clamp(tonemapGain, localMinGain, localMaxGain);
+    float gateLuma = gateLumaSum / gateLumaWs;
+    float gateVar = max(gateLumaSqSum / gateLumaWs - gateLuma * gateLuma, 0.0);
+    float gateStd = sqrt(max(gateVar, 0.0));
+    float brightTail = gateLuma + 1.5 * gateStd;
+    float haloGate = smoothstep(brightTail * 0.85, max(brightTail, 1e-4), gateLuma);
+    float shadowFloor = smoothstep(0.15, 0.45, gateLuma);
+    float highlightMask = haloGate * shadowFloor;
+    // The shadow gate caps the gain at FUSIONGAIN so shadows are not
+    // over-boosted into the noise floor, and the wide shadowFloor band spreads
+    // the release gradually so the plateau fades instead of printing a bright
+    // rim at the shadow boundary. The cap itself must stay a monotonic min():
+    // a "smooth" cap would dip below FUSIONGAIN on the highlight side to rejoin
+    // the uncapped gain, which inverts and posterizes highlight-adjacent pixels.
+    tonemapGain = mix(min(tonemapGain, FUSIONGAIN), tonemapGain, highlightMask);
+    tonemapGain = clamp(tonemapGain, 0.25, FUSIONCAP);
     #endif
-    float br = (sRGB.r+sRGB.g+sRGB.b)/3.0;
     vec4 gains = textureBicubicHardware(GainMap, vec2(xy)/vec2(textureSize(InputBuffer, 0)));
     gains.rgb = vec3(gains.r,(gains.g+gains.b)/2.0,gains.a);
     float gainsVal = dot(gains.rgb,vec3(1.0/3.0));
-    sRGB = applyColorSpace(sRGB,tonemapGain, gainsVal);
-    //sRGB = vec3(tonemapGain);
-    #if LUT == 1
-    //sRGB = lookup(sRGB);
-    #endif
-    //Rip Shadowing applied
-    //br = (clamp(br-0.0008,0.0,0.007)*(1.0/0.007));
-    //br*= (clamp(3.0-sRGB.r+sRGB.g+sRGB.b,0.0,0.006)*(1.0/0.006));
-
-
-    //float sat2 = SATURATION2;
-    //sat2*=br;
+    float linearLum = 0.0;
+    sRGB = applyColorSpace(sRGB, tonemapGain, gainsVal, linearLum);
     sRGB = saturate(sRGB,SATURATION2,SATURATION);
     sRGB = contrastSin(sRGB,mix(CONTRAST+SHADOWS, CONTRAST, luminocity(sRGB)));
-    //float noiseO = (NOISEO*NOISEO)*0.25;
-    //noiseO = min(noiseO,0.25);
-    //Output = clamp((sRGB-noiseO)/(vec3(1.0)-noiseO),0.0,1.0);
-    Output = clamp(sRGB,0.0,1.0);
+    #if ULTRAHDR == 1
+    Output = vec4(clamp(sRGB,0.0,1.0), linearLum);
+    #else
+    Output = vec4(clamp(sRGB,0.0,1.0), 0.0);
+    #endif
     #if POSTLUT == 1
-        Output = postlookup(Output);
+        Output.rgb = postlookup(Output.rgb);
     #endif
 }

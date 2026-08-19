@@ -1,0 +1,99 @@
+precision highp float;
+precision highp sampler2D;
+uniform sampler2D InputBuffer;
+// When > 0 the shader outputs the 8-bit quantised gain map directly,
+// otherwise it outputs the raw log2 gain.
+uniform float GAIN_SCALE;
+// Log2 of the minimum content boost: the gain value quantised to 0.
+uniform float GAIN_MIN;
+uniform float GAIN_CLAMP_MIN;
+uniform float GAIN_CLAMP_MAX;
+uniform float GAIN_OFFSET;
+uniform float GAIN_DEADBAND;
+uniform int BLOCK_OFFSET;
+uniform int ROTATE;
+uniform int MIRROR;
+uniform ivec2 RAW_SIZE;
+uniform int CROP_H;
+uniform int CROP_Y;
+out vec4 Output;
+
+// Computes the Ultra HDR gain map from the intermediate pipeline texture.
+// The alpha channel holds the pre-tonemap linear HDR luminance written by
+// Initial. The gain map is the log2 ratio between that linear HDR luminance
+// and the displayed SDR base linearized with the standard sRGB transfer.
+// Positive gains recover compressed highlights. Shadows and neutral regions
+// remain exactly the SDR base so texture and noise cannot become dark spots.
+float srgbToLinear(float value) {
+    value = max(value, 0.0);
+    return value <= 0.04045
+            ? value / 12.92
+            : pow((value + 0.055) / 1.055, 2.4);
+}
+
+float hashDither(ivec2 p) {
+    float v = sin(float(p.x) * 12.9898 + float(p.y) * 78.233) * 43758.5453;
+    return fract(v) - 0.5;
+}
+
+ivec2 mapOutputToSource(ivec2 outCoord, ivec2 texSize) {
+    ivec2 src;
+    switch (ROTATE) {
+        case 0:
+            src = ivec2(outCoord.x, outCoord.y + CROP_Y);
+            if (MIRROR == 1) src.y = texSize.y - 1 - src.y;
+            break;
+        case 1:
+            src = ivec2(texSize.x - 1 - outCoord.y,
+                    outCoord.x + CROP_Y);
+            if (MIRROR == 1) src.y = texSize.y - 1 - src.y;
+            break;
+        case 2:
+            src = ivec2(texSize.x - 1 - outCoord.x,
+                    texSize.y - 1 - outCoord.y);
+            if (MIRROR == 1) src.y = outCoord.y;
+            break;
+        default:
+            src = ivec2(outCoord.y, texSize.y - 1 - outCoord.x);
+            if (MIRROR == 1) src.y = outCoord.x;
+            break;
+    }
+    return src;
+}
+
+void main() {
+    ivec2 outCoord = ivec2(gl_FragCoord.xy) + ivec2(0, BLOCK_OFFSET);
+    ivec2 texSize = RAW_SIZE;
+    ivec2 src = mapOutputToSource(outCoord, texSize);
+    if (src.x < 0 || src.x >= texSize.x || src.y < 0 || src.y >= texSize.y) {
+        Output = vec4(0.0);
+        return;
+    }
+    vec4 t = texelFetch(InputBuffer, src, 0);
+    float sdrLin = dot(vec3(srgbToLinear(t.r), srgbToLinear(t.g),
+            srgbToLinear(t.b)), vec3(0.299, 0.587, 0.114));
+    float hdrLum = max(t.a, 0.0);
+    float L = log2((hdrLum + GAIN_OFFSET) / (sdrLin + GAIN_OFFSET));
+    if (sdrLin < 0.007843137) {
+        L = min(L, 2.3);
+    }
+    L = clamp(L, GAIN_CLAMP_MIN, GAIN_CLAMP_MAX);
+    // Smooth deadband instead of a binary cutoff: fade the gain out gradually
+    // below GAIN_DEADBAND so shadow gradients do not step from zero to a
+    // positive gain. Shadows/neutrals never darken (min boost stays 1.0).
+    L *= smoothstep(0.0, GAIN_DEADBAND, L);
+    // Soft roll-off with the SDR luminance: in near-black pixels the alpha
+    // noise floor exceeds sdrLin and would otherwise be amplified, producing
+    // "rolling from black to brighter shadows" banding. Ramp gain to zero
+    // smoothly as the base rolls out of black.
+    L *= smoothstep(0.0, 0.02, sdrLin);
+    if (GAIN_SCALE > 0.0) {
+        // GL_R8 is normalized: write [0,1], not the nominal byte value.
+        // A sub-byte dither breaks contours in smooth HDR gradients before
+        // the gain map is read back and JPEG-compressed.
+        float encoded = (L - GAIN_MIN) * GAIN_SCALE + hashDither(src);
+        Output = vec4(clamp(encoded / 255.0, 0.0, 1.0), 0.0, 0.0, 0.0);
+    } else {
+        Output = vec4(L, 0.0, 0.0, 0.0);
+    }
+}

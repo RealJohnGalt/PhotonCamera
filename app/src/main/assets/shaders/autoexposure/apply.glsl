@@ -51,4 +51,8 @@ void main() {
     Output.rgb = tonemap(mix(inp.rgb,sqrt(inp.rgb), applyGammaMix), mpy);
     Output.rgb = mix(Output.rgb,Output.rgb * Output.rgb, applyGammaMix);
     Output.rgb = clamp(Output.rgb, 0.0, 1.0);
+    // Preserve Initial's pre-tonemap HDR reference. AutoExposure changes the
+    // displayed SDR base nonlinearly; rescaling or clamping alpha here creates
+    // plateaus that become hard gain-map transitions after log quantisation.
+    Output.a = inp.a;
 }

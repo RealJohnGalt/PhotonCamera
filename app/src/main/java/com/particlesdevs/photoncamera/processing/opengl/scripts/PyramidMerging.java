@@ -254,7 +254,6 @@ public class PyramidMerging extends GLOneScript {
     GLTexture inputBase;
     GLTexture baseDiff;
     GLTexture baseDiffOr;
-    GLTexture diffFlow;
     GLTexture base;
     GLTexture baseAlter;
     //GLTexture;
@@ -312,10 +311,12 @@ public class PyramidMerging extends GLOneScript {
         Point rawHalf = new Point(parameters.rawSize.x/2,parameters.rawSize.y/2);
         result = new GLTexture(raw,new GLFormat(GLFormat.DataType.UNSIGNED_16,1), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
         inputBase = new GLTexture(parameters.rawSize, new GLFormat(GLFormat.DataType.UNSIGNED_16,1),images.get(0).buffer, GL_NEAREST, GL_CLAMP_TO_EDGE);
+        // The base frame's CPU buffer is copied into the inputBase texture above
+        // (synchronous upload), so it is not needed anymore and can be released.
+        images.get(0).close();
         // Pyramid diff
         baseDiff = new GLTexture(rawHalf,new GLFormat(GLFormat.DataType.FLOAT_16,4),null,GL_LINEAR,GL_CLAMP_TO_EDGE);
         baseDiffOr = new GLTexture(rawHalf,new GLFormat(GLFormat.DataType.FLOAT_16,4),null,GL_LINEAR,GL_CLAMP_TO_EDGE);
-        diffFlow = new GLTexture(rawHalf,new GLFormat(GLFormat.DataType.FLOAT_16,4),null,GL_LINEAR,GL_CLAMP_TO_EDGE);
         // Temporal result
         base = new GLTexture(rawHalf,new GLFormat(GLFormat.DataType.FLOAT_16,4),null,GL_LINEAR,GL_CLAMP_TO_EDGE);
         baseAlter = new GLTexture(rawHalf,new GLFormat(GLFormat.DataType.FLOAT_16,4),null,GL_LINEAR,GL_CLAMP_TO_EDGE);
@@ -780,6 +781,10 @@ public class PyramidMerging extends GLOneScript {
             //glProg.setVar("exposure", exposure);
             //glProg.setVar("weight",  1.0f);
             glProg.computeAuto(base.mSize, 1);
+            // This frame's CPU buffer has been uploaded into inputAlter and merged
+            // into the pyramid; release it to keep the peak footprint at roughly one
+            // frame instead of N frames held for the whole merge.
+            frame.close();
         }
 
         /*
@@ -837,7 +842,6 @@ public class PyramidMerging extends GLOneScript {
         brightMap.close();
         result.close();
         alignmentTex.close();
-        diffFlow.close();
         baseDiffOr.close();
         //noiseMap.close();
         for (int i = 0; i < pyramid.gauss.length; i++) {
