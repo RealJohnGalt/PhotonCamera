@@ -68,8 +68,8 @@ out vec4 Output;
 // gain toward the window's smoothed mean gain, which both softens that
 // boundary and keeps the refit insensitive to the center pixel's luma (no
 // per-pixel grid on gradients).
-#define LTMLUMASIGMA 0.16
-#define LTMREFIT 0.45
+#define LTMLUMASIGMA 0.10
+#define LTMREFIT 0.35
 #import coords
 #import interpolation
 #import gaussian
@@ -339,7 +339,7 @@ void main() {
     float gateLuma = gateLumaSum / gateLumaWs;
     float gateVar = max(gateLumaSqSum / gateLumaWs - gateLuma * gateLuma, 0.0);
     float gateStd = sqrt(max(gateVar, 0.0));
-    float brightTail = gateLuma + 1.5 * gateStd;
+    float brightTail = gateLuma + 2.0 * gateStd;
     float haloGate = smoothstep(brightTail * 0.85, max(brightTail, 1e-4), gateLuma);
     float shadowFloor = smoothstep(0.15, 0.45, gateLuma);
     float highlightMask = haloGate * shadowFloor;

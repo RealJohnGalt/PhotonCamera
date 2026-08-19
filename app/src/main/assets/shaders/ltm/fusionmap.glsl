@@ -16,7 +16,7 @@ out vec2 result;
 // dies) and below genuine edge steps (so the gain edge is not bled across).
 // Typical edge steps in BrBuffer are ~0.1; if the pattern survives, raise it
 // slightly, if an edge looks soft, lower it.
-#define RANGESIGMA 0.08
+#define RANGESIGMA 0.06
 #define luminocity(x) dot(x.rgb, vec3(0.299, 0.587, 0.114))
 float gammaInverse(float x) {
     return x*x;
@@ -82,7 +82,7 @@ void main() {
     // Re-clamp the smoothed average: the notch can overshoot slightly where
     // the gate truncates it near an edge, and the map must stay inside its
     // legal gain range before the full-res application.
-    float lowresVal  = clamp(ratioSum / ws, 0.0, FUSIONCAP);
+    float lowresVal  = clamp(ratioSum / max(ws, 1e-6), 0.0, FUSIONCAP);
     // /FUSIONGAIN so the *FUSIONGAIN in initial.glsl recovers the true gain.
     // initial.glsl then applies the CPU mapNorm guard on top.
     result = vec2(lowresVal / FUSIONGAIN, 0.0);
