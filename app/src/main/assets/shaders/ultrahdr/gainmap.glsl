@@ -63,7 +63,7 @@ ivec2 mapOutputToSource(ivec2 outCoord, ivec2 texSize) {
 
 void main() {
     ivec2 outCoord = ivec2(gl_FragCoord.xy) + ivec2(0, BLOCK_OFFSET);
-    ivec2 texSize = RAW_SIZE;
+    ivec2 texSize = textureSize(InputBuffer, 0);
     ivec2 src = mapOutputToSource(outCoord, texSize);
     if (src.x < 0 || src.x >= texSize.x || src.y < 0 || src.y >= texSize.y) {
         Output = vec4(0.0);
