@@ -2393,6 +2393,12 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
         rebuildPreviewBuilder();
     }
 
+    public void applyAeMetering() {
+        if (mPreviewRequestBuilder == null) return;
+        applyAeMeteringRegions(mPreviewRequestBuilder);
+        rebuildPreviewBuilder();
+    }
+
     private void applyAeMeteringRegions(CaptureRequest.Builder builder) {
         int mode = PreferenceKeys.getAeMeteringStd();
         Log.d(TAG, "applyAeMeteringRegions mode:" + mode);
