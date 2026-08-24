@@ -240,6 +240,14 @@
                 android:summary=""
                 android:icon="@drawable/ic_gradient_black_24dp"
                 />
+        <com.particlesdevs.photoncamera.ui.settings.custompreferences.ManagedSwitchPreference
+                android:key="@string/pref_ultrahdr_key"
+                android:defaultValue="@bool/pref_ultrahdr_default"
+                android:layout="@layout/preference_with_margin"
+                android:title="@string/ultrahdr"
+                android:summary="@string/ultrahdr_summary"
+                android:icon="@drawable/ic_uhdr_black_24dp"
+                />
         <com.particlesdevs.photoncamera.ui.settings.custompreferences.UniversalSeekBarPreference
                 android:key="@string/pref_sharpness_seekbar_key"
                 android:layout="@layout/preference_seekbar"

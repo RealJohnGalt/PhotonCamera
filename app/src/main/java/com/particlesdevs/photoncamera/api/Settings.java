@@ -22,6 +22,7 @@ public class Settings {
     public boolean align;
     public boolean hdrx;
     public boolean hdrxNR;
+    public boolean ultraHdr;
     public double exposureCompensation;
     public double saturation;
     public double sharpness;
@@ -85,6 +86,7 @@ public class Settings {
         QuadBayer = PreferenceKeys.isQuadBayerOn();
         fpsMode = PreferenceKeys.getFpsMode();
         hdrxNR = PreferenceKeys.isHdrxNrOn();
+        ultraHdr = PreferenceKeys.isUltraHdrOn();
         alignAlgorithm = PreferenceKeys.getAlignMethodValue();
         colorMethod = PreferenceKeys.getColorMethodValue();
         focusPeak = PreferenceKeys.getFocusPeakValue();

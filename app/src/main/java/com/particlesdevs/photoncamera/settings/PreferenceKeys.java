@@ -64,6 +64,7 @@ public class PreferenceKeys {
         settingsManager.setInitial(SCOPE_GLOBAL, Key.KEY_EIS_PHOTO, resources.getBoolean(R.bool.pref_eis_photo_default));
         settingsManager.setInitial(SCOPE_GLOBAL, Key.KEY_QUAD_BAYER, resources.getBoolean(R.bool.pref_quad_bayer_default));
         settingsManager.setInitial(SCOPE_GLOBAL, Key.KEY_REMOSAIC, resources.getBoolean(R.bool.pref_remosaic_default));
+        settingsManager.setInitial(SCOPE_GLOBAL, Key.KEY_ULTRAHDR, resources.getBoolean(R.bool.pref_ultrahdr_default));
         settingsManager.setInitial(SCOPE_GLOBAL, Key.KEY_FPS_PREVIEW, 0);
         settingsManager.setInitial(SCOPE_GLOBAL, Key.KEY_AE_MODE, resources.getString(R.string.pref_ae_mode_default));
         settingsManager.setInitial(SCOPE_GLOBAL, Key.CAMERA_MODE, resources.getString(R.string.pref_camera_mode_default));
@@ -355,6 +356,9 @@ public class PreferenceKeys {
     public static boolean isQuadBayerOn() {
         return preferenceKeys.settingsManager.getBoolean(SCOPE_GLOBAL, Key.KEY_QUAD_BAYER);
     }
+    public static boolean isUltraHdrOn() {
+        return preferenceKeys.settingsManager.getBoolean(SCOPE_GLOBAL, Key.KEY_ULTRAHDR);
+    }
 
     public static void setQuadBayer(boolean value) {
         preferenceKeys.settingsManager.set(SCOPE_GLOBAL, Key.KEY_QUAD_BAYER, value);
@@ -515,6 +519,7 @@ public class PreferenceKeys {
         KEY_EIS_PHOTO(R.string.pref_eis_photo_key),
         KEY_QUAD_BAYER(R.string.pref_quad_bayer_key),
         KEY_FPS_PREVIEW(R.string.pref_fps_preview_key),
+        KEY_ULTRAHDR(R.string.pref_ultrahdr_key),
         CAMERA_ID(R.string.camera_id),
         TONEMAP(R.string.tonemap_key),
         GAMMA(R.string.gamma_key),

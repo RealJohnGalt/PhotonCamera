@@ -19,12 +19,15 @@ import com.particlesdevs.photoncamera.processing.ImageFrameDeblur;
 import com.particlesdevs.photoncamera.processing.ImageSaver;
 import com.particlesdevs.photoncamera.processing.ProcessingEventsListener;
 import com.particlesdevs.photoncamera.processing.opengl.postpipeline.PostPipeline;
+import com.particlesdevs.photoncamera.processing.ultrahdr.GainMapComputer;
+import com.particlesdevs.photoncamera.processing.ultrahdr.UltraHdrEncoder;
 import com.particlesdevs.photoncamera.processing.parameters.FrameNumberSelector;
 import com.particlesdevs.photoncamera.processing.parameters.IsoExpoSelector;
 import com.particlesdevs.photoncamera.processing.render.Parameters;
 import com.particlesdevs.photoncamera.util.Allocator;
 
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -292,6 +295,14 @@ public class HdrxProcessor extends ProcessorBase {
         PostPipeline pipeline = new PostPipeline();
 
         Bitmap img = pipeline.Run(output, processingParameters);
+
+        PostPipeline.GainMapRaw gm = null;
+        if (PhotonCamera.getSettings().ultraHdr) {
+            // Must run before the raw frame buffer is freed.
+            gm = pipeline.RunHDRGainMap(output, processingParameters, img,
+                    GainMapComputer.SCALE_DOWN, GainMapComputer.SCALE);
+        }
+
         Allocator.free(output);
 
         img = overlay(img, pipeline.debugData.toArray(new Bitmap[0]));
@@ -302,9 +313,24 @@ public class HdrxProcessor extends ProcessorBase {
             Log.d(TAG,"Error in processingEventsListener.onProcessingFinished:"+Log.getStackTraceString(e));
         }
         imageFile = Paths.get(imageFile.toAbsolutePath() + ".jpg");
-        //Saves the final bitmap
-        boolean imageSaved = ImageSaver.Util.saveBitmapAsJPG(imageFile, img,
-                ImageSaver.JPG_QUALITY, exifData);
+        boolean imageSaved;
+        if (PhotonCamera.getSettings().ultraHdr && gm != null) {
+            try {
+                GainMapComputer.Result res = GainMapComputer.compute(gm.buffer, gm.w, gm.h, gm.scale);
+                byte[] uhdr = UltraHdrEncoder.encode(img, res, exifData);
+                Files.write(imageFile, uhdr);
+                img.recycle();
+                imageSaved = true;
+            } catch (Exception e) {
+                Log.e(TAG, "Ultra HDR encode failed, falling back to SDR JPEG", e);
+                imageSaved = ImageSaver.Util.saveBitmapAsJPG(imageFile, img,
+                        ImageSaver.JPG_QUALITY, exifData);
+            }
+        } else {
+            //Saves the final bitmap
+            imageSaved = ImageSaver.Util.saveBitmapAsJPG(imageFile, img,
+                    ImageSaver.JPG_QUALITY, exifData);
+        }
 
         try {
             processingEventsListener.notifyImageSavedStatus(imageSaved, imageFile);

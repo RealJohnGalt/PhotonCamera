@@ -16,8 +16,12 @@ import com.particlesdevs.photoncamera.processing.opengl.scripts.AverageRaw;
 import com.particlesdevs.photoncamera.processing.parameters.FrameNumberSelector;
 import com.particlesdevs.photoncamera.processing.parameters.IsoExpoSelector;
 import com.particlesdevs.photoncamera.processing.render.Parameters;
+import com.particlesdevs.photoncamera.processing.ultrahdr.GainMapComputer;
+import com.particlesdevs.photoncamera.processing.ultrahdr.UltraHdrEncoder;
+import com.particlesdevs.photoncamera.util.Log;
 
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -130,10 +134,31 @@ public class UnlimitedProcessor extends ProcessorBase {
         PostPipeline pipeline = new PostPipeline();
         Bitmap bitmap = pipeline.Run(unlimitedBuffer, parameters);
 
+        PostPipeline.GainMapRaw gm = null;
+        if (PhotonCamera.getSettings().ultraHdr) {
+            gm = pipeline.RunHDRGainMap(unlimitedBuffer, parameters, bitmap,
+                    GainMapComputer.SCALE_DOWN, GainMapComputer.SCALE);
+        }
+
         processingEventsListener.onProcessingFinished("Unlimited JPG Processing Finished");
         imageFile = Paths.get(imageFile.toAbsolutePath() + ".jpg");
-        boolean imageSaved = ImageSaver.Util.saveBitmapAsJPG(imageFile, bitmap,
-                ImageSaver.JPG_QUALITY, exifData);
+        boolean imageSaved;
+        if (PhotonCamera.getSettings().ultraHdr && gm != null) {
+            try {
+                GainMapComputer.Result res = GainMapComputer.compute(gm.buffer, gm.w, gm.h, gm.scale);
+                byte[] uhdr = UltraHdrEncoder.encode(bitmap, res, exifData);
+                Files.write(imageFile, uhdr);
+                bitmap.recycle();
+                imageSaved = true;
+            } catch (Exception e) {
+                Log.e("UnlimitedProcessor", "Ultra HDR encode failed, falling back to SDR JPEG", e);
+                imageSaved = ImageSaver.Util.saveBitmapAsJPG(imageFile, bitmap,
+                        ImageSaver.JPG_QUALITY, exifData);
+            }
+        } else {
+            imageSaved = ImageSaver.Util.saveBitmapAsJPG(imageFile, bitmap,
+                    ImageSaver.JPG_QUALITY, exifData);
+        }
 
         processingEventsListener.notifyImageSavedStatus(imageSaved, imageFile);
 

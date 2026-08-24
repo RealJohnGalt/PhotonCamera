@@ -190,14 +190,18 @@ public class GLTexture implements AutoCloseable {
     }
 
     public ByteBuffer textureBuffer(GLFormat outputFormat,boolean direct) {
+        // FLOAT_16 textures are transferred with GL_FLOAT (32-bit), so the CPU
+        // buffer must hold 4 bytes/channel, not the 2-byte on-GPU storage size.
+        int bytesPerCh = outputFormat.mFormat == GLFormat.DataType.FLOAT_16 ? 4 : outputFormat.mFormat.mSize;
         ByteBuffer buffer;
-        if(!direct) buffer = ByteBuffer.allocate(mSize.x * mSize.y * outputFormat.mFormat.mSize * outputFormat.mChannels);
-        else buffer = ByteBuffer.allocateDirect(mSize.x * mSize.y * outputFormat.mFormat.mSize * outputFormat.mChannels);
+        if(!direct) buffer = ByteBuffer.allocate(mSize.x * mSize.y * bytesPerCh * outputFormat.mChannels);
+        else buffer = ByteBuffer.allocateDirect(mSize.x * mSize.y * bytesPerCh * outputFormat.mChannels);
         glReadPixels(0, 0, mSize.x, mSize.y, outputFormat.getGLFormatExternal(), outputFormat.getGLType(), buffer);
         return buffer;
     }
     public ByteBuffer textureBuffer(GLFormat outputFormat) {
-        ByteBuffer buffer = ByteBuffer.allocate(mSize.x * mSize.y * outputFormat.mFormat.mSize * outputFormat.mChannels);
+        int bytesPerCh = outputFormat.mFormat == GLFormat.DataType.FLOAT_16 ? 4 : outputFormat.mFormat.mSize;
+        ByteBuffer buffer = ByteBuffer.allocate(mSize.x * mSize.y * bytesPerCh * outputFormat.mChannels);
         glReadPixels(0, 0, mSize.x, mSize.y, outputFormat.getGLFormatExternal(), outputFormat.getGLType(), buffer);
         return buffer;
     }

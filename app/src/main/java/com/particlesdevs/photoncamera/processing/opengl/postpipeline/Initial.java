@@ -120,6 +120,11 @@ import static com.particlesdevs.photoncamera.util.Math2.mix;
             WorkingTexture = super.previousNode.WorkingTexture;
             return;
         }
+        // Cheap-pass support: keep the linear buffer (Initial's input = post
+        // demosaic/denoise/ABLC) so the HDR pass can re-run only color + tone.
+        if (((PostPipeline) basePipeline).captureDemosaic) {
+            ((PostPipeline) basePipeline).captureDemosaicLinear(super.previousNode.WorkingTexture);
+        }
         // Values are automatically injected in BeforeRun()!
         intenseCurveX = new float[curvePointsCount];
         intenseCurveY = new float[curvePointsCount];
@@ -271,6 +276,8 @@ import static com.particlesdevs.photoncamera.util.Math2.mix;
                 cube = basePipeline.mParameters.CCT.cubes[0].cube;
         }
         if(((PostPipeline)basePipeline).FusionMap != null) glProg.setDefine("FUSION", 1);
+        glProg.setDefine("HDRMAXBOOST", 64.0f);
+        glProg.setDefine("HDR_OUTPUT", ((PostPipeline) basePipeline).hdrOutput ? 1 : 0);
         glProg.useAssetProgram("initial");
         if(mode == ColorCorrectionTransform.CorrectionMode.CUBE || mode == ColorCorrectionTransform.CorrectionMode.CUBES){
             glProg.setVar("CUBE0",cube[0]);
