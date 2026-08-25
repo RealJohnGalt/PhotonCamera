@@ -95,6 +95,21 @@ public class GLBasePipeline implements AutoCloseable {
     }
 
     /**
+     * Logical size recorded by {@link #setMain3Size(Point)} while
+     * {@link #main3} is still unallocated; honored by {@link #getMain3()}.
+     */
+    private Point main3SizeHint;
+
+    public void setMain3Size(Point p) {
+        if (main3 != null) {
+            main3.mSize.x = p.x;
+            main3.mSize.y = p.y;
+        } else {
+            main3SizeHint = new Point(p);
+        }
+    }
+
+    /**
      * Lazily creates and returns the third full-res working texture. Nodes
      * that only occasionally need a scratch buffer (demosaics, denoise) use
      * this instead of relying on an eager allocation, so the ~515 MB (at
@@ -102,7 +117,8 @@ public class GLBasePipeline implements AutoCloseable {
      */
     public GLTexture getMain3() {
         if (main3 == null) {
-            Point sz = workSize != null ? workSize : new Point(mParameters.rawSize.x, mParameters.rawSize.y);
+            Point sz = main3SizeHint != null ? main3SizeHint
+                    : (workSize != null ? workSize : new Point(mParameters.rawSize.x, mParameters.rawSize.y));
             main3 = new GLTexture(sz, new GLFormat(GLFormat.DataType.FLOAT_16, GLDrawParams.WorkDim), null,
                     android.opengl.GLES30.GL_LINEAR, android.opengl.GLES30.GL_CLAMP_TO_EDGE);
         }
