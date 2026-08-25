@@ -1034,6 +1034,20 @@ public class ESD4D extends GLOneScript {
             endT();
         }
 
+        // baseDiff's last consumer was this loop's final mergeCombineWeight
+        // pass (each iteration writes it, then feeds it back); merge2o only
+        // binds base + alignmentTex. Same for kernelsMap on the GPU side -
+        // the post pipeline consumes only kernelsMapCPU. Release both
+        // (~160 MB at 64 MP) before the full-res merge2o render.
+        if (baseDiff != null) {
+            try { baseDiff.close(); } catch (Exception ignored) {}
+            baseDiff = null;
+        }
+        if (kernelsMap != null) {
+            try { kernelsMap.close(); } catch (Exception ignored) {}
+            kernelsMap = null;
+        }
+
         float[] bl2 = new float[4];
         for (int i = 0; i < 4; i++) {
             bl2[i] = blNorm[i]*(FAKE_WL / parameters.whiteLevel);
