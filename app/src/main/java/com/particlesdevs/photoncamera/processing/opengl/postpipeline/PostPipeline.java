@@ -589,12 +589,7 @@ public class PostPipeline extends GLBasePipeline {
                             add(new Demosaic());
                             break;
                         default:
-                            // Amaze parks the pre-demosaic linear frame in
-                            // main3 via swap3(), so it can be released right
-                            // after this node. Other demosaics keep their
-                            // result in main3 and must not be retired early.
                             add(new Amaze());
-                            spareReleaseIndex = Nodes.size() - 1;
                             break;
                     }
                 }

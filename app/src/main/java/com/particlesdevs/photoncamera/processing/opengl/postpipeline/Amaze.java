@@ -100,7 +100,12 @@ public class Amaze extends Node {
         imgH = inTex.mSize.y;
         window = new Point(TILE + 2 * BORDER + 2 * PAD, TILE + 2 * BORDER + 2 * PAD);
         inner = new Point(PAD + BORDER, PAD + BORDER);
-        WorkingTexture = basePipeline.getMain3();
+        // Standard ping-pong target: nothing downstream reads the pre-demosaic
+        // bayer once Amaze is done, so no third full-res texture (main3) is
+        // needed. The guard keeps the target from ever aliasing the input if
+        // the pool state changes.
+        WorkingTexture = basePipeline.getMain();
+        if (WorkingTexture == inTex) WorkingTexture = basePipeline.getMain();
 
         cfa = alloc(window, 1);
         grad = alloc(window, 4);
@@ -145,8 +150,6 @@ public class Amaze extends Node {
         pmrbint.close();
         greenD3.close();
         dgrb01.close();
-
-        WorkingTexture = basePipeline.swap3();
     }
 
     private void runTile(int ox, int oy) {
