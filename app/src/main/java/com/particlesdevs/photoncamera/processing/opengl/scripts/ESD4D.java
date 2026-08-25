@@ -1000,6 +1000,15 @@ public class ESD4D extends GLOneScript {
             //glProg.setVar("exposure", exposure);
             //glProg.setVar("weight",  1.0f);
             glProg.computeAuto(base.mSize, 1);
+            // Release the alter frame's RAW buffer immediately after it has
+            // been accumulated into `base`. The reference frame (index 0) is
+            // kept alive as `inputBase` until merge2o; all other buffers are
+            // no longer needed. This truncates the peak native heap from
+            // N*128 MB to ~2*128 MB during the burst merge with no quality
+            // change — the frame was already uploaded via inputAlter.loadData.
+            if (frame.buffer != null) {
+                try { frame.close(); } catch (Exception ignored) {}
+            }
             endT();
         }
 

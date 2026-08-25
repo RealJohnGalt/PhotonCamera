@@ -266,11 +266,22 @@ public class HdrxProcessor extends ProcessorBase {
         if(images.size() > 1) {
             esd4d = new ESD4D(new Point(width, height), images);
             esd4d.parameters = processingParameters;
-            esd4d.Run();
-            esd4d.close();
-            output = esd4d.Output;
-            for (int i = 0; i < images.size(); i++) {
-                images.get(i).close();
+            try {
+                esd4d.Run();
+                output = esd4d.Output;
+            } finally {
+                try { esd4d.close(); } catch (Exception e) {
+                    Log.e(TAG, "ESD4D close failed (non-fatal): " + Log.getStackTraceString(e));
+                }
+                // Free any per-frame buffers not already released inside
+                // ESD4D's merge loop (which closes each alter after
+                // accumulation). Guard null to avoid double-free log spam.
+                for (int i = 0; i < images.size(); i++) {
+                    ImageFrame f = images.get(i);
+                    if (f.buffer != null) {
+                        try { f.close(); } catch (Exception ignored) {}
+                    }
+                }
             }
             IncreaseWLBL(processingParameters);
         } else {
