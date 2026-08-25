@@ -22,6 +22,7 @@ import com.particlesdevs.photoncamera.processing.opengl.GLUtils;
 import com.particlesdevs.photoncamera.processing.render.NoiseModeler;
 import com.particlesdevs.photoncamera.processing.render.Parameters;
 import com.particlesdevs.photoncamera.settings.DynamicNoiseStore;
+import com.particlesdevs.photoncamera.util.Allocator;
 import com.particlesdevs.photoncamera.util.BufferUtils;
 import com.particlesdevs.photoncamera.util.Math2;
 
@@ -274,6 +275,8 @@ public class ESD4D extends GLOneScript {
     GLTexture brightMap;
     /** CPU copy of brightMap (float32 grayscale luma in [0,1]) set by {@link #exportBrightMap()}. */
     public FloatBuffer brightMapCPU;
+    /** Native backing buffer of {@link #brightMapCPU}; freed once KernelNet inference is done. */
+    ByteBuffer brightMapCPURaw;
     /** Unpacked size of {@link #brightMapCPU} (row-major, width*height floats). */
     public Point brightMapCPUSize;
     /** KernelNet half-res parameter texture (s1, s2, rho in RGBA16F) for the anisotropic filter. */
@@ -286,7 +289,6 @@ public class ESD4D extends GLOneScript {
     public Point kernelsMapCPUSize;
     /** Noise sigma fed to KernelNet (captured pre-merge-inflation). */
     float kernelSigma;
-    GLTexture result;
     GLTexture inputAlter;
     GLTexture alter;
     GLTexture alignmentTex;
@@ -506,7 +508,6 @@ public class ESD4D extends GLOneScript {
         if (cfa < 0 || cfa > 3) cfa = 0; // quad/monochrome modes: no normalization
         cfaShift = (cfa == 1 || cfa == 2) ? new Point(cfa % 2, cfa / 2) : new Point(0, 0);
         packedSize = new Point(rawHalf.x + cfaShift.x, rawHalf.y + cfaShift.y);
-        result = new GLTexture(raw,new GLFormat(GLFormat.DataType.UNSIGNED_16,1), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
         inputBase = new GLTexture(parameters.rawSize, new GLFormat(GLFormat.DataType.UNSIGNED_16,1),images.get(0).buffer, GL_NEAREST, GL_CLAMP_TO_EDGE);
         // Pyramid diff
         baseDiff = new GLTexture(packedSize,new GLFormat(GLFormat.DataType.FLOAT_16,4),null,GL_LINEAR,GL_CLAMP_TO_EDGE);
@@ -801,6 +802,13 @@ public class ESD4D extends GLOneScript {
         if(enableHotPixelCorrection)
             hotPixels();
 
+        // The reference frame's CPU copy has now been consumed everywhere:
+        // uploaded once into inputBase, read by alignment (closed above) and
+        // by the optional hot-pixel averaging pass. The merge loop never reads
+        // index 0 (it is remapped to minExpIdx), so release the ~129 MB native
+        // buffer here instead of pinning it through the whole merge.
+        images.get(0).close();
+
         glProg.setLayout(tile,tile,1);
         glProg.useAssetProgram("merge/mergeGrayscale",true);
         glProg.setVar("inSize", packedSize);
@@ -966,10 +974,16 @@ public class ESD4D extends GLOneScript {
                 }
                 kernelNetThread = null;
                 kernelsMap = createKernelsMap(kernelNetResult.get());
-                // brightMap GPU texture is no longer needed after the CPU luma
-                // copy (brightMapCPU) and KernelNet inference. Release it
-                // immediately rather than keeping it alive through the merge
-                // loop and final merge2o; brightMapCPU/kernelsMapCPU remain valid.
+                // The CPU luma readback (brightMapCPURaw/brightMapCPU) only fed
+                // KernelNet inference; every later stage consumes kernelsMap (GPU)
+                // / kernelsMapCPU. Free the ~64 MB native backing instead of
+                // pinning it through the whole merge loop and merge2o. The brightMap
+                // GPU texture (~32 MB @64MP) is also dead now, so release it too.
+                if (brightMapCPURaw != null) {
+                    Allocator.free(brightMapCPURaw);
+                    brightMapCPURaw = null;
+                }
+                brightMapCPU = null;
                 if (brightMap != null) {
                     try { brightMap.close(); } catch (Exception ignored) {}
                     brightMap = null;
@@ -1031,7 +1045,6 @@ public class ESD4D extends GLOneScript {
         glProg.setVar("cfaShift", cfaShift); // uniform: GLProg clears defines after each load
         glProg.setTexture("inTexture",base);
         glProg.setTexture("alignmentTexture", alignmentTex);
-        result.BufferLoad();
         glOne.glProcessing.drawBlocksToOutput();
         Output = glOne.glProcessing.mOutBuffer;
         AfterRun();
@@ -1046,9 +1059,11 @@ public class ESD4D extends GLOneScript {
     public FloatBuffer exportBrightMap() {
         if (brightMap == null) return null;
         brightMap.BufferLoad();
-        ByteBuffer raw = brightMap.textureBuffer(new GLFormat(GLFormat.DataType.FLOAT_32, 4), true);
-        raw.order(ByteOrder.nativeOrder());
-        brightMapCPU = raw.asFloatBuffer();
+        brightMapCPURaw = Allocator.allocate(brightMap.mSize.x * brightMap.mSize.y * 4 * 4);
+        if (brightMapCPURaw == null) return null;
+        brightMap.textureBuffer(new GLFormat(GLFormat.DataType.FLOAT_32, 4), brightMapCPURaw);
+        brightMapCPURaw.order(ByteOrder.nativeOrder());
+        brightMapCPU = brightMapCPURaw.asFloatBuffer();
         return brightMapCPU;
     }
 
@@ -1117,7 +1132,7 @@ public class ESD4D extends GLOneScript {
         if(base != null) { try { base.close(); } catch (Exception ignored) {} base = null; }
         if(baseAlter != null) { try { baseAlter.close(); } catch (Exception ignored) {} baseAlter = null; }
         if(brightMap != null) { try { brightMap.close(); } catch (Exception ignored) {} brightMap = null; }
-        if(result != null) { try { result.close(); } catch (Exception ignored) {} result = null; }
+        if(kernelsMap != null) { try { kernelsMap.close(); } catch (Exception ignored) {} kernelsMap = null; }
         if(useNcnnFlow && flowNetAlignment != null) {
             // Closes flowTex (== alignmentTex), so drop the reference to avoid
             // a double close below.
