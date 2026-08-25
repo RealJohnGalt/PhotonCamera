@@ -133,13 +133,14 @@ public class UnlimitedProcessor extends ProcessorBase {
 
 
         PostPipeline pipeline = new PostPipeline();
-        Bitmap bitmap = pipeline.Run(unlimitedBuffer, parameters);
 
-        // The stacked RAW frame is dead once it has been rendered - free it
-        // before the memory-heavy Ultra HDR gain-map pass (it previously
-        // leaked entirely).
-        Allocator.free(unlimitedBuffer);
+        // Ownership moves to the pipeline: the stacked RAW buffer is freed
+        // right after Bayer2Float uploaded it (it previously leaked entirely).
+        final ByteBuffer pipelineInput = unlimitedBuffer;
         unlimitedBuffer = null;
+        pipeline.onInputConsumed = () -> Allocator.free(pipelineInput);
+
+        Bitmap bitmap = pipeline.Run(pipelineInput, parameters);
 
         PostPipeline.GainMapRaw gm = null;
         if (PhotonCamera.getSettings().ultraHdr) {

@@ -67,7 +67,10 @@ public class GLCoreBlockProcessing extends GLContext implements AutoCloseable {
         glGenFramebuffers(1,bindFB,0);
         glGenRenderbuffers(1,bindRB,0);
         glBindRenderbuffer(GL_RENDERBUFFER,bindRB[0]);
-        glRenderbufferStorage(GL_RENDERBUFFER, glFormat.getGLFormatInternal(), size.x, size.y);
+        // Only TileSize-row windows are ever rendered and read back at once
+        // (see drawBlocksToOutput), so full-height storage would waste
+        // hundreds of MB at high resolutions.
+        glRenderbufferStorage(GL_RENDERBUFFER, glFormat.getGLFormatInternal(), size.x, Math.min(size.y, GLDrawParams.TileSize));
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER,bindFB[0]);
         glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, bindRB[0]);
         final int capacity = mOutWidth * mOutHeight * mglFormat.mFormat.mSize * mglFormat.mChannels;
@@ -87,7 +90,8 @@ public class GLCoreBlockProcessing extends GLContext implements AutoCloseable {
         glGenFramebuffers(1,bindFB,0);
         glGenRenderbuffers(1,bindRB,0);
         glBindRenderbuffer(GL_RENDERBUFFER,bindRB[0]);
-        glRenderbufferStorage(GL_RENDERBUFFER, glFormat.getGLFormatInternal(), size.x, size.y);
+        // See the tile-sizing note in the main constructor.
+        glRenderbufferStorage(GL_RENDERBUFFER, glFormat.getGLFormatInternal(), size.x, Math.min(size.y, GLDrawParams.TileSize));
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER,bindFB[0]);
         glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, bindRB[0]);
         mOutBuffer = output;

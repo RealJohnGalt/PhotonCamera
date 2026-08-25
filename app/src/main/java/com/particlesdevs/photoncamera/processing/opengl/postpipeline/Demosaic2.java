@@ -31,7 +31,7 @@ public class Demosaic2 extends Node {
         //Gradients
         glProg.useAssetProgram("demosaic/demosaicp0");
         glProg.setTexture("RawBuffer", glTexture);
-        glProg.drawBlocks(basePipeline.main3);
+        glProg.drawBlocks(basePipeline.getMain3());
         endT("Demosaic00");
         GLTexture outp;
 
@@ -50,7 +50,7 @@ public class Demosaic2 extends Node {
         startT();
         glProg.useAssetProgram("demosaic/demosaicp12b");
         glProg.setTexture("RawBuffer",previousNode.WorkingTexture);
-        glProg.setTexture("GradBuffer",basePipeline.main3);
+        glProg.setTexture("GradBuffer",basePipeline.getMain3());
         if(basePipeline.mSettings.cfaPattern == -2) glProg.setDefine("QUAD","1");
         GLTexture prev = previousNode.WorkingTexture;
         outp = basePipeline.getMain();
@@ -63,19 +63,19 @@ public class Demosaic2 extends Node {
         //Colour channels
         startT();
         int tile = 8;
-        WorkingTexture = basePipeline.main3;
+        WorkingTexture = basePipeline.getMain3();
         glProg.setLayout(tile,tile,1);
         glProg.useAssetProgram("demosaic/demosaicp0ig",true);
         glProg.setTextureCompute("inTexture", glTexture,false);
         glProg.setTextureCompute("outTexture", WorkingTexture,true);
         glProg.computeAuto(WorkingTexture.mSize,1);
 
-        WorkingTexture = basePipeline.main3;
+        WorkingTexture = basePipeline.getMain3();
         glProg.setLayout(tile,tile,1);
         glProg.useAssetProgram("demosaic/demosaicp2ec",true);
         glProg.setTextureCompute("inTexture", glTexture,false);
         glProg.setTextureCompute("greenTexture", outp,false);
-        glProg.setTextureCompute("igTexture", basePipeline.main3,false);
+        glProg.setTextureCompute("igTexture", basePipeline.getMain3(),false);
         glProg.setTextureCompute("outTexture", WorkingTexture,true);
         glProg.computeAuto(WorkingTexture.mSize,1);
         //glProg.drawBlocks(WorkingTexture);

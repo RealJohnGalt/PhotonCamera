@@ -308,12 +308,14 @@ public class HdrxProcessor extends ProcessorBase {
         pipeline.kernelParams = esd4d != null ? esd4d.kernelsMapCPU : null;
         pipeline.kernelParamsSize = esd4d != null ? esd4d.kernelsMapCPUSize : null;
 
-        Bitmap img = pipeline.Run(output, processingParameters);
-
-        // The merged RAW frame is dead once it has been rendered - free it
-        // before the memory-heavy Ultra HDR gain-map pass (~130 MB at 64 MP).
-        Allocator.free(output);
+        // Ownership moves to the pipeline: the merged RAW buffer is freed
+        // right after Bayer2Float uploaded it (or on failure), instead of
+        // staying pinned for the whole render.
+        final ByteBuffer pipelineInput = output;
         output = null;
+        pipeline.onInputConsumed = () -> Allocator.free(pipelineInput);
+
+        Bitmap img = pipeline.Run(pipelineInput, processingParameters);
 
         PostPipeline.GainMapRaw gm = null;
         if (PhotonCamera.getSettings().ultraHdr) {

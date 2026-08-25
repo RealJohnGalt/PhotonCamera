@@ -36,6 +36,22 @@ public class PostPipeline extends GLBasePipeline {
     public ByteBuffer stackFrame;
     public ByteBuffer lowFrame;
     public ByteBuffer highFrame;
+    /**
+     * Consume-once hook: fired exactly once - either right after the first
+     * node (Bayer2Float) uploaded {@link #stackFrame} to the GPU, or from
+     * {@link #Run}'s finally on failure. Callers use it to release the native
+     * RAW input early instead of pinning it for the whole render.
+     */
+    public Runnable onInputConsumed;
+
+    void fireOnInputConsumed() {
+        if (onInputConsumed != null) {
+            Runnable r = onInputConsumed;
+            onInputConsumed = null;
+            stackFrame = null;
+            r.run();
+        }
+    }
     public GLTexture FusionMap;
     public GLTexture GainMap;
     /**
@@ -147,6 +163,16 @@ public class PostPipeline extends GLBasePipeline {
     }
 
     public Bitmap Run(ByteBuffer inBuffer, Parameters parameters) {
+        try {
+            return runInternal(inBuffer, parameters);
+        } finally {
+            // Guarantees the RAW input is released even if the pipeline fails
+            // before Bayer2Float could consume it (success path no-ops).
+            fireOnInputConsumed();
+        }
+    }
+
+    private Bitmap runInternal(ByteBuffer inBuffer, Parameters parameters) {
         mParameters = parameters;
         mSettings = PhotonCamera.getSettings();
         workSize = new Point(mParameters.rawSize.x, mParameters.rawSize.y);
@@ -563,7 +589,12 @@ public class PostPipeline extends GLBasePipeline {
                             add(new Demosaic());
                             break;
                         default:
+                            // Amaze parks the pre-demosaic linear frame in
+                            // main3 via swap3(), so it can be released right
+                            // after this node. Other demosaics keep their
+                            // result in main3 and must not be retired early.
                             add(new Amaze());
+                            spareReleaseIndex = Nodes.size() - 1;
                             break;
                     }
                 }

@@ -30,6 +30,10 @@ public class Bayer2Float extends Node {
     int testPatternIndex = 2;
     @Override
     public void AfterRun(){
+        // The RAW stackFrame was uploaded once (texture 'in', closed below);
+        // from here on nothing in the chain reads it, so let the owner free
+        // the native buffer instead of pinning it for the whole render.
+        ((PostPipeline) basePipeline).fireOnInputConsumed();
         if(testPattern && testPatternIndex == 0) {
             kodbm.close();
             kod.close();
@@ -116,7 +120,8 @@ public class Bayer2Float extends Node {
 
         glProg.drawBlocks(WorkingTexture);
         basePipeline.main1 = new GLTexture(wsize, new GLFormat(GLFormat.DataType.FLOAT_16, GLDrawParams.WorkDim), null, GL_LINEAR, GL_CLAMP_TO_EDGE);
-        basePipeline.main3 = new GLTexture(wsize, new GLFormat(GLFormat.DataType.FLOAT_16, GLDrawParams.WorkDim), null, GL_LINEAR, GL_CLAMP_TO_EDGE);
+        // main3 is allocated lazily via GLBasePipeline.getMain3() on first
+        // use (demosaic scratch), so it does not sit idle through fusion.
         ((PostPipeline) basePipeline).GainMap = GainMapTex;
         glProg.closed = true;
         in.close();

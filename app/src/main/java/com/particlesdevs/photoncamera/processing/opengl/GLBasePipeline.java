@@ -39,6 +39,14 @@ public class GLBasePipeline implements AutoCloseable {
     private String currentProg;
 
     public int texnum = 0;
+    /**
+     * Node index after which {@link #main3} holds only disposable data and
+     * can be released mid-run (e.g. right after Amaze's swap3, which parks
+     * the pre-demosaic frame there). -1 disables early release; the final
+     * close in runAll still applies. Only safe when main3 does NOT hold the
+     * node chain's live WorkingTexture.
+     */
+    public int spareReleaseIndex = -1;
 
     public GLBasePipeline(String name){
         Name = name;
@@ -83,6 +91,29 @@ public class GLBasePipeline implements AutoCloseable {
             main2 = main3;
             main3 = temp;
             return main2;
+        }
+    }
+
+    /**
+     * Lazily creates and returns the third full-res working texture. Nodes
+     * that only occasionally need a scratch buffer (demosaics, denoise) use
+     * this instead of relying on an eager allocation, so the ~515 MB (at
+     * 64 MP) texture does not exist while it is unused.
+     */
+    public GLTexture getMain3() {
+        if (main3 == null) {
+            Point sz = workSize != null ? workSize : new Point(mParameters.rawSize.x, mParameters.rawSize.y);
+            main3 = new GLTexture(sz, new GLFormat(GLFormat.DataType.FLOAT_16, GLDrawParams.WorkDim), null,
+                    android.opengl.GLES30.GL_LINEAR, android.opengl.GLES30.GL_CLAMP_TO_EDGE);
+        }
+        return main3;
+    }
+
+    /** Closes {@link #main3} if it exists; safe to call repeatedly. */
+    public void closeMain3() {
+        if (main3 != null) {
+            main3.close();
+            main3 = null;
         }
     }
 
@@ -159,6 +190,9 @@ public class GLBasePipeline implements AutoCloseable {
                 drawProgramTexture(Nodes.get(i));
             }
             Nodes.get(i).AfterRun();
+            if (i == spareReleaseIndex) {
+                closeMain3();
+            }
         }
         if(texnum == 1){
             if (main2 != null) main2.close();
