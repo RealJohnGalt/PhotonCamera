@@ -966,6 +966,14 @@ public class ESD4D extends GLOneScript {
                 }
                 kernelNetThread = null;
                 kernelsMap = createKernelsMap(kernelNetResult.get());
+                // brightMap GPU texture is no longer needed after the CPU luma
+                // copy (brightMapCPU) and KernelNet inference. Release it
+                // immediately rather than keeping it alive through the merge
+                // loop and final merge2o; brightMapCPU/kernelsMapCPU remain valid.
+                if (brightMap != null) {
+                    try { brightMap.close(); } catch (Exception ignored) {}
+                    brightMap = null;
+                }
             }
 
             glProg.setLayout(tile, tile, 1);
@@ -1101,15 +1109,15 @@ public class ESD4D extends GLOneScript {
 
     @Override
     public void AfterRun() {
-        if(hotPixelBuffer != null) hotPixelBuffer.close();
-        inputAlter.close();
-        alter.close();
-        inputBase.close();
-        baseDiff.close();
-        base.close();
-        baseAlter.close();
-        brightMap.close();
-        result.close();
+        if(hotPixelBuffer != null) { try { hotPixelBuffer.close(); } catch (Exception ignored) {} hotPixelBuffer = null; }
+        if(inputAlter != null) { try { inputAlter.close(); } catch (Exception ignored) {} inputAlter = null; }
+        if(alter != null) { try { alter.close(); } catch (Exception ignored) {} alter = null; }
+        if(inputBase != null) { try { inputBase.close(); } catch (Exception ignored) {} inputBase = null; }
+        if(baseDiff != null) { try { baseDiff.close(); } catch (Exception ignored) {} baseDiff = null; }
+        if(base != null) { try { base.close(); } catch (Exception ignored) {} base = null; }
+        if(baseAlter != null) { try { baseAlter.close(); } catch (Exception ignored) {} baseAlter = null; }
+        if(brightMap != null) { try { brightMap.close(); } catch (Exception ignored) {} brightMap = null; }
+        if(result != null) { try { result.close(); } catch (Exception ignored) {} result = null; }
         if(useNcnnFlow && flowNetAlignment != null) {
             // Closes flowTex (== alignmentTex), so drop the reference to avoid
             // a double close below.
