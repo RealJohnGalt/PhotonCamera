@@ -870,6 +870,9 @@ public class GLUtils {
         return pyramid;
     }
     public Pyramid createPyramid(int levels, double step, GLTexture input){
+        return createPyramid(levels, step, input, false);
+    }
+    public Pyramid createPyramid(int levels, double step, GLTexture input, boolean freeGaussDuringBuild){
         Pyramid pyramid = new Pyramid();
         pyramid.glProg = glProg;
         pyramid.glUtils = this;
@@ -907,8 +910,14 @@ public class GLUtils {
             //glProg.setTexture("target", upscale[i]);
             pyramid.laplace[i] = new GLTexture(pyramid.sizes[i],pyramid.gauss[i + 1].mFormat);
             glProg.drawBlocks(pyramid.laplace[i]);
-            //upscale[i].close();
             Log.d("Pyramid","diff:"+pyramid.laplace[i].mSize+" downscaled:"+pyramid.gauss[i].mSize);
+            if (freeGaussDuringBuild && i < pyramid.gauss.length - 1) {
+                // Reconstruction only needs the top gauss level plus the
+                // laplaces, so this level is dead now - release it instead
+                // of holding every level until the whole pyramid exists.
+                pyramid.gauss[i].close();
+                pyramid.gauss[i] = null;
+            }
         }
 
         return pyramid;

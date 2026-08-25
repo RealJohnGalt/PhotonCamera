@@ -497,16 +497,19 @@ public class ExposureFusionBayer2 extends Node {
 
         //GLUtils.Pyramid highExpo = glUtils.createPyramid(levelcount,downScalePerLevel, expose(in,overexposure));
         long time = System.currentTimeMillis();
-        GLUtils.Pyramid normalExpo = glUtils.createPyramid(levelcount,downScalePerLevel, expose(in,underexposure,overexposure));
+        GLUtils.Pyramid normalExpo = glUtils.createPyramid(levelcount,downScalePerLevel, expose(in,underexposure,overexposure), true);
         Log.d(Name,"Pyramid elapsed:"+(System.currentTimeMillis()-time)+" ms");
         //in.close();
 
         // expose() premultiplied the packed exposure channels with their
         // full-resolution luma shares, so the pyramid channels carry the
         // weighting implicitly and no separate weight textures are needed.
-        // The gauss levels are no longer used by the fusion loop.
+        // The gauss levels are no longer used by the fusion loop; levels
+        // below the top were already released during the build.
         int ind = normalExpo.gauss.length - 1;
-        for (int i = 0; i < ind; i++) normalExpo.gauss[i].close();
+        for (int i = 0; i < ind; i++) {
+            if (normalExpo.gauss[i] != null) normalExpo.gauss[i].close();
+        }
 
         // select base gauss
         glProg.setDefine("MAXLEVEL",normalExpo.laplace.length - 1);
