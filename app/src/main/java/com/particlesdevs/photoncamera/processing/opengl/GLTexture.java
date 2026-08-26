@@ -110,6 +110,42 @@ public class GLTexture implements AutoCloseable {
         reSetParameters();
         checkEglError("Tex glTexParameter");
     }
+
+    /**
+     * Defines a texture straight from a decoded bitmap's native pixels via
+     * GLUtils.texImage2D - no intermediate full-size buffer (the GLImage path
+     * would first duplicate the whole bitmap into a Java-accounted direct
+     * copy). Uses mutable tex storage; nothing downstream requires
+     * immutable storage.
+     */
+    public GLTexture(Bitmap bmp, int textureFilter, int textureWrapper) {
+        this.mSize = new Point(bmp.getWidth(), bmp.getHeight());
+        this.mFormat = new GLFormat(GLFormat.DataType.SIMPLE_8, 4);
+        mFormat.filter = textureFilter;
+        mFormat.wrap = textureWrapper;
+        this.mGLFormat = mFormat.getGLFormatInternal();
+        int[] TexID = new int[1];
+        glGenTextures(1,TexID,0);
+        Log.d("GLTexture","TexID:"+TexID[0] + " Size:"+mSize.x+"x"+mSize.y + " Format:"+mGLFormat + " Filter:"+textureFilter + " Wrapper:"+textureWrapper + " (bitmap)");
+        for(int i = 1; i<ids.length;i++){
+            if(!ids[i]){
+                Log.d("GLTexture","get:"+i);
+                if(count < i){
+                    count = i;
+                }
+                textures[i] = TexID[0];
+                ids[i] = true;
+                break;
+            }
+        }
+        mTextureID = TexID[0];
+        glActiveTexture(GL_TEXTURE1+mTextureID);
+        glBindTexture(GL_TEXTURE_2D, mTextureID);
+        GLUtils.texImage2D(GL_TEXTURE_2D, 0, bmp, 0);
+        checkEglError("glTexImage2D(bitmap)");
+        reSetParameters();
+        checkEglError("Tex glTexParameter");
+    }
     public GLTexture(Point size, GLFormat glFormat, Buffer pixels, int textureFilter, int textureWrapper,int level) {
         mFormat = glFormat;
         mFormat.filter = textureFilter;

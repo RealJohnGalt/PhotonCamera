@@ -1,10 +1,11 @@
     package com.particlesdevs.photoncamera.processing.opengl.postpipeline;
 
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Point;
 import com.particlesdevs.photoncamera.util.Log;
 
 import com.particlesdevs.photoncamera.processing.opengl.GLFormat;
-import com.particlesdevs.photoncamera.processing.opengl.GLImage;
 import com.particlesdevs.photoncamera.processing.opengl.GLTexture;
 import com.particlesdevs.photoncamera.processing.opengl.nodes.Node;
 import com.particlesdevs.photoncamera.processing.render.ColorCorrectionTransform;
@@ -31,7 +32,6 @@ import static com.particlesdevs.photoncamera.util.Math2.mix;
     @Override
     public void AfterRun() {
         if(lutLoaded) {
-            lutbm.close();
             lut.close();
         }
         if (postLut != null) postLut.close();
@@ -57,7 +57,6 @@ import static com.particlesdevs.photoncamera.util.Math2.mix;
     GLTexture GammaTexture;
     GLTexture HSVTexture;
     GLTexture LookupTexture;
-    GLImage lutbm;
     float highersatmpy = 1.0f;
     @Tunable(title = "Gamma Coefficient", category = "Color & Tone", min = 1.0f, max = 3.0f, defaultValue = 2.2f)
     float gammaKoefficientGenerator = 2.2f;
@@ -219,10 +218,10 @@ import static com.particlesdevs.photoncamera.util.Math2.mix;
         glProg.setDefine("SOFTKNEE", highlightSoftness);
 
         if(postlut != null && postlut.exists()){
-            lutbm = new GLImage(postlut);
-            postLut = new GLTexture(lutbm,GL_LINEAR,GL_CLAMP_TO_EDGE,0);
+            Bitmap postlutBmp = BitmapFactory.decodeFile(postlut.getAbsolutePath());
+            postLut = new GLTexture(postlutBmp,GL_LINEAR,GL_CLAMP_TO_EDGE);
             glProg.setDefine("POSTLUT",true);
-            int lutBase = (int)(0.1f+Math.pow(lutbm.size.x,1.0/3.0));
+            int lutBase = (int)(0.1f+Math.pow(postLut.mSize.x,1.0/3.0));
             Log.d(Name,"LutBase:"+lutBase);
             glProg.setDefine("POSTLUTSIZETILES", (float) lutBase);
             glProg.setDefine("POSTLUTSIZE", (float) (lutBase*lutBase));
@@ -294,21 +293,21 @@ import static com.particlesdevs.photoncamera.util.Math2.mix;
         GammaTexture = new GLTexture(gamma.length,1,
                 new GLFormat(GLFormat.DataType.FLOAT_16),BufferUtils.getFrom(gamma),GL_LINEAR,GL_CLAMP_TO_EDGE);
         File customlut = new File(FileManager.sPHOTON_TUNING_DIR,"initial_lut.png");
-        boolean loaded = false;
+        Bitmap lutBitmap = null;
         if(customlut.exists()){
-            lutbm = new GLImage(customlut);
+            lutBitmap = BitmapFactory.decodeFile(customlut.getAbsolutePath());
             glProg.setDefine("LUT",true);
-            lutLoaded = true;
+            lutLoaded = lutBitmap != null;
         } else {
             try {
-                lutbm = new GLImage(PhotonCamera.getAssetLoader().getInputStream("initial_lut.png"));
-                lutLoaded = true;
+                lutBitmap = BitmapFactory.decodeStream(PhotonCamera.getAssetLoader().getInputStream("initial_lut.png"));
+                lutLoaded = lutBitmap != null;
             } catch (IOException e) {
                 e.printStackTrace();
             }
         }
         if(lutLoaded) {
-            lut = new GLTexture(lutbm, GL_LINEAR, GL_CLAMP_TO_EDGE, 0);
+            lut = new GLTexture(lutBitmap, GL_LINEAR, GL_CLAMP_TO_EDGE);
             glProg.setTexture("LookupTable", lut);
         }
         if(postLut != null) glProg.setTexture("PostLut",postLut);

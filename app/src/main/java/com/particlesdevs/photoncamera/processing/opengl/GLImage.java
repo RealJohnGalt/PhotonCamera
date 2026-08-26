@@ -136,5 +136,6 @@ public class GLImage implements AutoCloseable {
             } catch (Exception ignored) {}
             byteBuffer = null;
         }
+        mBmp = null;
     }
 }
