@@ -401,8 +401,16 @@ public class PostPipeline extends GLBasePipeline {
             int gw = Math.max(1, (sdrSize.x + down - 1) / down);
             int gh = Math.max(1, (sdrSize.y + down - 1) / down);
 
-            // Scene luma is reduced directly onto the final gain-map grid.
-            GLTexture lTex = new GLTexture(new Point(gw, gh),
+            // Pack four independent logical luma values in each RGBA16F texel:
+            // R=(even,even), G=(odd,even), B=(even,odd), A=(odd,odd).
+            //
+            // The physical texture has one quarter as many texels as the
+            // logical luma grid, retaining the R16F-equivalent effective
+            // storage cost while using the broadly supported RGBA16F target.
+            int lumaPackedW = Math.max(1, (gw + 1) / 2);
+            int lumaPackedH = Math.max(1, (gh + 1) / 2);
+            GLTexture lTex = new GLTexture(
+                    new Point(lumaPackedW, lumaPackedH),
                     new GLFormat(GLFormat.DataType.FLOAT_16, 4));
             lTex.BufferLoad();
 
@@ -418,7 +426,7 @@ public class PostPipeline extends GLBasePipeline {
             prog.setVar("uLinGridSize", gw, gh);
             GLES30.glDisable(GLES30.GL_SCISSOR_TEST);
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, lTex.mBuffer);
-            GLES30.glViewport(0, 0, gw, gh);
+            GLES30.glViewport(0, 0, lumaPackedW, lumaPackedH);
             prog.draw();
             checkGlError("scene-luma draw");
             // The linear snapshot is only sampled by the scene-luma pass;
@@ -459,7 +467,11 @@ public class PostPipeline extends GLBasePipeline {
             float sMedLin;
             GLHistogram hist = new GLHistogram(prog, histSize);
             try {
-                lMed = Math.max(histogramMedian(hist.Compute(lTex), histSize), 1e-4f);
+                // Expand packed logical luma lanes into the same histogram
+                // population that the old vec4(l, l, l, 1) lTex produced.
+                lMed = Math.max(histogramMedian(
+                        hist.ComputePackedLuma2x2(lTex, new Point(gw, gh)),
+                        histSize), 1e-4f);
                 float sMedDisp = histogramMedian(hist.Compute(sdrSmall), histSize);
                 sMedLin = srgbToLinear(sMedDisp);
             } finally {

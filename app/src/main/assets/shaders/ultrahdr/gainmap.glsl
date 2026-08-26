@@ -57,12 +57,18 @@ void main() {
         for (int dx = 0; dx < uDown; dx++) {
             ivec2 p = ivec2(sx + dx, sy + dy);
             vec3 s = texelFetch(InputBuffer, p, 0).rgb;
-            vec3 l = max(texelFetch(LBuffer, p, 0).rgb, vec3(0.0));
+
+            // LBuffer is packed RGBA16F:
+            // R=(even,even), G=(odd,even), B=(even,odd), A=(odd,odd).
+            ivec2 packedP = p >> 1;
+            vec4 packedL = texelFetch(LBuffer, packedP, 0);
+            int lane = ((p.y & 1) << 1) | (p.x & 1);
+            float l = max(packedL[lane], 0.0);
 
             // SDR luminance in linear light.
             float sL = lum709(srgbToLinear(s));
             // Scene luminance is already linear; anchored to the render's top.
-            float hL = lum709(l) * uAnchor;
+            float hL = l * uAnchor;
 
             // Decode applies (SDR + OffsetSDR) * 2^gain - OffsetHDR, so the
             // encode-side ratio must add the offset, not clamp to it.

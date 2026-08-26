@@ -3,6 +3,9 @@ precision highp int;
 precision highp float;
 uniform sampler2D inTexture;
 uniform vec4 exposure;
+uniform bool packedLuma2x2;
+uniform bool replicateRedToRgb;
+uniform ivec2 packedLumaLogicalSize;
 uniform float input1;
 uniform float input2;
 #define COL_R 1
@@ -46,7 +49,7 @@ shared uint localAlpha[HISTSIZE];
 LAYOUT
 
 void main() {
-    ivec2 storePos = ivec2(gl_GlobalInvocationID.xy)*SCALE;
+    ivec2 samplePos = ivec2(gl_GlobalInvocationID.xy)*SCALE;
     ivec2 imgsize = textureSize(inTexture,0).xy;
     uint index = uint(gl_LocalInvocationIndex) * HISTSTEPS; // 0 - 64 * HISTSTEPS
     for (uint i = 0u; i < HISTSTEPS; i++) {
@@ -65,24 +68,58 @@ void main() {
     }
     barrier();
 
-    if (storePos.x < imgsize.x && storePos.y < imgsize.y) {
-        vec4 texColor = texture(inTexture,(vec2(storePos) + 0.5)/vec2(imgsize));
-        uvec4 texColorUint = clamp(uvec4(exposure * texColor), uvec4(0), uvec4(HISTSIZE - 1));
-        #if COL_CUSTOM == 1
-            CUSTOM_PROGRAM;
-        #endif
-        #if COL_R == 1
-        atomicAdd(localRed[texColorUint.r], 1u);
-        #endif
-        #if COL_G == 1
-        atomicAdd(localGreen[texColorUint.g], 1u);
-        #endif
-        #if COL_B == 1
-        atomicAdd(localBlue[texColorUint.b], 1u);
-        #endif
-        #if COL_A == 1
-        atomicAdd(localAlpha[texColorUint.a], 1u);
-        #endif
+    if (packedLuma2x2) {
+        // samplePos is in logical gain-map coordinates, preserving the same
+        // SCALE-based sample locations used before luma packing.
+        if (samplePos.x < packedLumaLogicalSize.x &&
+                samplePos.y < packedLumaLogicalSize.y) {
+            ivec2 packedPos = samplePos >> 1;
+            vec4 packed = texelFetch(inTexture, packedPos, 0);
+            int lane = ((samplePos.y & 1) << 1) | (samplePos.x & 1);
+            float l = packed[lane];
+            uvec4 texColorUint = clamp(
+                    uvec4(exposure * vec4(l, l, l, 1.0)),
+                    uvec4(0),
+                    uvec4(HISTSIZE - 1));
+
+            #if COL_R == 1
+            atomicAdd(localRed[texColorUint.r], 1u);
+            #endif
+            #if COL_G == 1
+            atomicAdd(localGreen[texColorUint.g], 1u);
+            #endif
+            #if COL_B == 1
+            atomicAdd(localBlue[texColorUint.b], 1u);
+            #endif
+            #if COL_A == 1
+            atomicAdd(localAlpha[texColorUint.a], 1u);
+            #endif
+        }
+    } else {
+        if (samplePos.x < imgsize.x && samplePos.y < imgsize.y) {
+            vec4 texColor = texture(inTexture, (vec2(samplePos) + 0.5) / vec2(imgsize));
+
+            if (replicateRedToRgb) {
+                texColor.rgb = vec3(texColor.r);
+            }
+
+            uvec4 texColorUint = clamp(uvec4(exposure * texColor), uvec4(0), uvec4(HISTSIZE - 1));
+            #if COL_CUSTOM == 1
+                CUSTOM_PROGRAM;
+            #endif
+            #if COL_R == 1
+            atomicAdd(localRed[texColorUint.r], 1u);
+            #endif
+            #if COL_G == 1
+            atomicAdd(localGreen[texColorUint.g], 1u);
+            #endif
+            #if COL_B == 1
+            atomicAdd(localBlue[texColorUint.b], 1u);
+            #endif
+            #if COL_A == 1
+            atomicAdd(localAlpha[texColorUint.a], 1u);
+            #endif
+        }
     }
     barrier();
 

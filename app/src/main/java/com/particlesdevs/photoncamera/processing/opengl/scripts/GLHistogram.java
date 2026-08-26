@@ -74,6 +74,25 @@ public class GLHistogram implements AutoCloseable{
         return out;
     }
     public int[][] Compute(GLTexture input){
+        return Compute(input, false, false, null);
+    }
+
+    /**
+     * Computes a histogram for an RGBA16F texture that packs four independent
+     * scalar luma samples in a 2x2 logical-cell layout:
+     *
+     * R = (0,0), G = (1,0), B = (0,1), A = (1,1).
+     *
+     * The histogram shader expands each valid component as logical
+     * (l,l,l,1), preserving the histogram population of the former
+     * one-logical-luma-per-RGBA16F representation.
+     */
+    public int[][] ComputePackedLuma2x2(GLTexture input, Point logicalSize) {
+        return Compute(input, false, true, logicalSize);
+    }
+
+    private int[][] Compute(GLTexture input, boolean replicateRedToRgb,
+                            boolean packedLuma2x2, Point packedLumaLogicalSize) {
         long time = System.currentTimeMillis();
         input.Bufferize();
         int tile = 8;
@@ -89,9 +108,14 @@ public class GLHistogram implements AutoCloseable{
         glProg.setDefine("SPATIAL_KERNEL", customKernel != null);
 
         glProg.setLayout(tile,tile,1);
-        if(CustomShader.isEmpty())
+        if(CustomShader.isEmpty()) {
             glProg.useAssetProgram("GLHistogram/histogram",true);
-        else {
+            glProg.setVar("replicateRedToRgb", replicateRedToRgb ? 1 : 0);
+            glProg.setVar("packedLuma2x2", packedLuma2x2 ? 1 : 0);
+            glProg.setVar("packedLumaLogicalSize",
+                    packedLuma2x2 ? packedLumaLogicalSize.x : 0,
+                    packedLuma2x2 ? packedLumaLogicalSize.y : 0);
+        } else {
             glProg.useAssetProgram(CustomShader, true);
         }
         if (customKernel != null)
@@ -105,7 +129,12 @@ public class GLHistogram implements AutoCloseable{
         glProg.setBufferCompute("histogramGreen",buffers[1]);
         glProg.setBufferCompute("histogramBlue",buffers[2]);
         glProg.setBufferCompute("histogramAlpha",buffers[3]);
-        glProg.computeAuto(new Point(input.mSize.x/resize, input.mSize.y/resize), 1);
+        Point computeSize = packedLuma2x2
+                ? new Point(packedLumaLogicalSize.x/resize,
+                packedLumaLogicalSize.y/resize)
+                : new Point(input.mSize.x/resize,
+                input.mSize.y/resize);
+        glProg.computeAuto(computeSize, 1);
         if (Rc)
             outputArr[0] = buffers[0].readBufferIntegers(true);
         if (Gc)
@@ -116,6 +145,16 @@ public class GLHistogram implements AutoCloseable{
             outputArr[3] = buffers[3].readBufferIntegers(true);
         Log.d("GLHistogram"," elapsed:"+(System.currentTimeMillis()-time)+" ms");
         return outputArr;
+    }
+
+    /**
+     * Computes a histogram for a texture. When {@code replicateRedToRgb} is
+     * true, the histogram shader treats a scalar R texture as logical
+     * (R,R,R,1), preserving callers that previously used replicated RGB
+     * scalar render targets.
+     */
+    public int[][] Compute(GLTexture input, boolean replicateRedToRgb){
+        return Compute(input, replicateRedToRgb, false, null);
     }
 
     @Override

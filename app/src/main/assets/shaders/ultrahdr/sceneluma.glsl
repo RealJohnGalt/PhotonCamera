@@ -75,9 +75,7 @@ float sceneLumaAt(ivec2 xy, ivec2 texSize) {
     return lum709(max(c, vec3(0.0))) * gainsVal;
 }
 
-void main() {
-    ivec2 outXY = ivec2(gl_FragCoord.xy);
-
+float sceneLumaForGridCell(ivec2 outXY, ivec2 texSize) {
     // Integer boundaries partition [0, uLinFullSize) exactly over the final
     // grid. This handles dimensions not divisible by down without dropping
     // or stretching the final right/bottom source regions.
@@ -89,7 +87,6 @@ void main() {
     begin = clamp(begin, ivec2(0), uLinFullSize - ivec2(1));
     end = clamp(max(end, begin + ivec2(1)), begin + ivec2(1), uLinFullSize);
 
-    ivec2 texSize = ivec2(textureSize(InputBuffer, 0));
     float sum = 0.0;
     int count = 0;
 
@@ -100,6 +97,41 @@ void main() {
         }
     }
 
-    float l = sum / float(count);
-    Output = vec4(l, l, l, 1.0);
+    return sum / float(count);
+}
+
+void main() {
+    // Each RGBA16F texel stores a 2x2 set of logical luma-grid cells:
+    //
+    // R = (0,0), G = (1,0), B = (0,1), A = (1,1).
+    //
+    // This retains one FP16 scalar per logical cell while requiring only
+    // one quarter as many physical RGBA16F texels.
+    ivec2 packedXY = ivec2(gl_FragCoord.xy);
+    ivec2 logicalBase = packedXY * 2;
+    ivec2 texSize = ivec2(textureSize(InputBuffer, 0));
+
+    float l00 = sceneLumaForGridCell(logicalBase, texSize);
+
+    float l10 = l00;
+    if (logicalBase.x + 1 < uLinGridSize.x) {
+        l10 = sceneLumaForGridCell(logicalBase + ivec2(1, 0), texSize);
+    }
+
+    float l01 = l00;
+    if (logicalBase.y + 1 < uLinGridSize.y) {
+        l01 = sceneLumaForGridCell(logicalBase + ivec2(0, 1), texSize);
+    }
+
+    float l11 = l00;
+    if (logicalBase.x + 1 < uLinGridSize.x &&
+            logicalBase.y + 1 < uLinGridSize.y) {
+        l11 = sceneLumaForGridCell(logicalBase + ivec2(1, 1), texSize);
+    } else if (logicalBase.x + 1 < uLinGridSize.x) {
+        l11 = l10;
+    } else if (logicalBase.y + 1 < uLinGridSize.y) {
+        l11 = l01;
+    }
+
+    Output = vec4(l00, l10, l01, l11);
 }
