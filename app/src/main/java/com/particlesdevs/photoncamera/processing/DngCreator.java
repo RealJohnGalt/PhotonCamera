@@ -60,6 +60,7 @@ public class DngCreator {
     private native void setBinning(long nativePtr, boolean binning);
     private native void destroy(long nativePtr);
     private native void writeFile(long nativePtr, ByteBuffer dngBuffer, ByteBuffer raw, String path, int offset);
+    private native void nFreeDngBuffer(ByteBuffer dngBuffer);
     private native void openArchive(long nativePtr, String path);
     private native void openArchiveByFd(long nativePtr, int fd);
     private native void closeArchive(long nativePtr);
@@ -422,6 +423,16 @@ public class DngCreator {
         return dngData;
     }
 
+    /**
+     * Frees the native buffer returned by {@link #createDNG} /
+     * {@link #dngBuffer} (malloc'd by tinydngwriter, otherwise leaked).
+     */
+    public void freeDngBuffer(ByteBuffer dngBuffer) {
+        if (dngBuffer != null) {
+            nFreeDngBuffer(dngBuffer);
+        }
+    }
+
     public void writeBuffer(OutputStream outputStream, ByteBuffer buffer, int width, int height) {
         ByteBuffer dngData = createDNG(nativePtr, width, height, buffer);
         if (dngData == null) {
@@ -439,6 +450,8 @@ public class DngCreator {
             }
         } catch (Exception e) {
             throw new RuntimeException("Failed to write DNG data to output stream", e);
+        } finally {
+            freeDngBuffer(dngData);
         }
     }
 

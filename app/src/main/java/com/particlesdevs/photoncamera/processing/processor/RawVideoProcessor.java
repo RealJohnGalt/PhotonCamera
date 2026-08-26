@@ -267,8 +267,37 @@ public class RawVideoProcessor extends ProcessorBase {
         rawAudioRecorder.stop();
         if (writeExecutor != null) {
             writeExecutor.shutdown();
+            try {
+                // Pending writeFile tasks consume the ring buffers; wait for
+                // them before tearing the archive and buffers down.
+                writeExecutor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
             dngCreator.closeArchive();
             writeExecutor = null;
+        }
+        releaseDngRing();
+    }
+
+    private void releaseDngRing() {
+        if (dngBuffers != null) {
+            for (int i = 0; i < dngBuffers.length; i++) {
+                if (dngBuffers[i] == null) continue;
+                if (i == 0 && dngCreator != null) {
+                    // Slot 0 is the native tinydngwriter allocation.
+                    dngCreator.freeDngBuffer(dngBuffers[i]);
+                } else {
+                    Allocator.free(dngBuffers[i]);
+                }
+                dngBuffers[i] = null;
+            }
+            dngBuffers = null;
+        }
+        rawBuffers = null;
+        if (dngCreator != null) {
+            dngCreator.close();
+            dngCreator = null;
         }
     }
 }

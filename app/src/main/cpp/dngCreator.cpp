@@ -1220,4 +1220,12 @@ JNIEXPORT void JNICALL Java_com_particlesdevs_photoncamera_processing_DngCreator
             creator->closeArchive();
         }
     }
+
+    JNIEXPORT void JNICALL Java_com_particlesdevs_photoncamera_processing_DngCreator_nFreeDngBuffer(JNIEnv *env, jobject obj, jobject dngBuffer) {
+        if (dngBuffer == nullptr) return;
+        void *data = env->GetDirectBufferAddress(dngBuffer);
+        if (data == nullptr) return;
+        // tinydngwriter's WriteToMemory documents malloc() ownership
+        free(data);
+    }
 }
