@@ -294,6 +294,7 @@ public class ESD4D extends GLOneScript {
     GLTexture alignmentTex;
     /** Dense optical-flow alignment (FlowNet); non-null when useNcnnFlow ran. */
     FlowNetAlignment flowNetAlignment;
+    PyramidAlignment pyramidAlignment;
     @Tunable(title = "HotPixels detect threshold", category = "Merge", description = "Higher multiplier detects less hotpixels", min = 0.5f, max = 5.0f, step = 0.1f, defaultValue = 1.5f)
     double detectThr;
 
@@ -856,13 +857,14 @@ public class ESD4D extends GLOneScript {
             }
         }
         if (enableAlignment && !useNcnnFlow) {
-            PyramidAlignment pyramidAlignment = new PyramidAlignment(alignmentOutputSize, images, glProg, glUtils, this);
+            pyramidAlignment = new PyramidAlignment(alignmentOutputSize, images, glProg, glUtils, this);
             pyramidAlignment.parameters = parameters;
             long startTime = System.currentTimeMillis();
-            pyramidAlignment.Run();
-            Log.d("ESD4D", "Alignment time: " + (System.currentTimeMillis() - startTime) + "ms");
+            // Base preparation only; each frame is aligned just-in-time inside
+            // the merge loop below, reusing its already-uploaded RAW texture.
+            pyramidAlignment.init();
+            Log.d("ESD4D", "Alignment init time: " + (System.currentTimeMillis() - startTime) + "ms");
             alignmentTex = pyramidAlignment.Result;
-            pyramidAlignment.close();
         } else if (!enableAlignment) {
             alignmentTex = new GLTexture(alignmentOutputSize, new GLFormat(GLFormat.DataType.FLOAT_16, 4),
                     BufferUtils.getFrom(new float[alignmentOutputSize.x * alignmentOutputSize.y * 4]),
@@ -897,6 +899,11 @@ public class ESD4D extends GLOneScript {
             //int f = 1;
             Log.d("ESD4D", "load:"+frame.pair.curlayer.name() + " " + frame.pair.layerMpy);
             inputAlter.loadData(frame.buffer);
+            if (pyramidAlignment != null) {
+                // Just-in-time alignment reusing the upload above (no second
+                // full-res RAW transfer per frame).
+                pyramidAlignment.alignFrame(ind, inputAlter);
+            }
 
             GLTexture flowTex = null;
             if(useNcnnFlow) {
@@ -1147,6 +1154,11 @@ public class ESD4D extends GLOneScript {
         if(baseAlter != null) { try { baseAlter.close(); } catch (Exception ignored) {} baseAlter = null; }
         if(brightMap != null) { try { brightMap.close(); } catch (Exception ignored) {} brightMap = null; }
         if(kernelsMap != null) { try { kernelsMap.close(); } catch (Exception ignored) {} kernelsMap = null; }
+        if(pyramidAlignment != null) {
+            // Does not close Result (== alignmentTex), which is handled below.
+            try { pyramidAlignment.close(); } catch (Exception ignored) {}
+            pyramidAlignment = null;
+        }
         if(useNcnnFlow && flowNetAlignment != null) {
             // Closes flowTex (== alignmentTex), so drop the reference to avoid
             // a double close below.

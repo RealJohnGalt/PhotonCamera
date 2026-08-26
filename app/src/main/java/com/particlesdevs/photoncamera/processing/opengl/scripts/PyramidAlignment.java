@@ -162,21 +162,8 @@ public class PyramidAlignment implements AutoCloseable {
     @Tunable(title = "Correction Sharpness", category = "Alignment", min = -1.0f, max = 2.0f, defaultValue = 1.0f)
     float sharpness;
 
-    // Fixed alignment parameters, tuned on real ProRAW bursts with
-    // perspective (hand-shake) warps in tools/alignment-bench:
-    // - OFFSETS 9: the 8-neighborhood coarse-offset propagation roughly
-    //   halves the badly-misaligned tile share vs the plus-shape on every
-    //   tested scene (day, dusk, night).
-    // - significancy 2.0: significance-gate threshold in noise sigmas (the
-    //   canonical 2-sigma test). Freezes only statistically-insignificant
-    //   improvements (textureless tiles keep the smooth coarse field instead
-    //   of random-walking) while accepting genuine detail matches; 3.0
-    //   started rejecting real detail, 1.5 admits more noise locks at night
-    //   (measured on real ProRAW bursts, tools/alignment-bench).
-    // - prefilter sigma 1.5 quad units (normalize.glsl): centered 5-tap
-    //   gaussian, no min/max trim - hot pixels are invisible after this
-    //   average and the pyramid above it, trimming only removed detail.
-    // - cost: noise-normalized L1 without truncation (see align.glsl).
+    // Fixed alignment parameters (tuned via the prefilter below rather than
+    // per-shot tunables; they must stay in sync with alignment/align.glsl).
     private static final int ALIGN_OFFSETS = 9;
     private static final float ALIGN_SIGNIFICANCY = 2.0f;
     private static final float PREFILTER_SIGMA = 1.5f;
@@ -191,8 +178,34 @@ public class PyramidAlignment implements AutoCloseable {
     GLTexture hotPix;
     GLUtils.Pyramid pyramid;
     GLUtils.Pyramid pyramidAlter;
+    // Snapshots taken by {@link #init()} so frames can be aligned lazily -
+    // even after ESD4D's adaptive noise fit has mutated the modeler - while
+    // producing rows identical to the original batch order.
+    private float noiseS, noiseO;
+    private float[] alignBlackLevel = new float[4];
+    private Point rawHalf;
+    private int levelcount;
+    private final int tile = 8;
+    private GLTexture histCurveTex;
+    private GLTexture alterCurveTex;
+    // Prefilter (normalize.glsl) configuration: sigma and the gaussian
+    // noise-reduction factor, computed once in init() and reused per frame.
+    private float blurSigma;
+    private float prefilterN;
 
     public void Run() {
+        init();
+        for (int f = 1; f < images.size(); f++) {
+            alignFrame(f, null);
+        }
+    }
+
+    /**
+     * One-time preparation: uploads the reference frame, estimates its black
+     * levels, builds the base pyramid and snapshots the pre-adaptive-fit
+     * noise model. Must be called before any {@link #alignFrame}.
+     */
+    public void init() {
         com.particlesdevs.photoncamera.settings.TunableInjector.inject(this);
         // --- prefilter (normalize.glsl) configuration ---
         // Replicate normalize.glsl's separable 5-tap gaussian weights to get
@@ -200,7 +213,7 @@ public class PyramidAlignment implements AutoCloseable {
         // sigma_out = sigma_in * sum(w1d^2), so integralNorm multiplies by
         // 1/sum(w1d^2). Without this the noise-normalized cost and the
         // significance gate overestimate sigma and lose discrimination.
-        float blurSigma = PREFILTER_SIGMA;
+        blurSigma = PREFILTER_SIGMA;
         double s2 = 2.0 * blurSigma * blurSigma;
         double[] wx = new double[5];
         double wsum = 0;
@@ -214,9 +227,9 @@ public class PyramidAlignment implements AutoCloseable {
             wx[i] /= wsum;
             sumsq += wx[i] * wx[i];
         }
-        float prefilterN = (float) (1.0 / sumsq);
+        prefilterN = (float) (1.0 / sumsq);
         Log.d("PyramidAlignment", "prefilter: sigma=" + blurSigma + " noiseFactor=" + prefilterN);
-        Point rawHalf = new Point(parameters.rawSize.x/2,parameters.rawSize.y/2);
+        rawHalf = new Point(parameters.rawSize.x/2,parameters.rawSize.y/2);
         Result = new GLTexture(size,new GLFormat(GLFormat.DataType.FLOAT_16,4), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
         inputBase = new GLTexture(parameters.rawSize, new GLFormat(GLFormat.DataType.UNSIGNED_16,1),images.get(0).buffer, GL_NEAREST, GL_CLAMP_TO_EDGE);
         // Temporal result
@@ -246,7 +259,6 @@ public class PyramidAlignment implements AutoCloseable {
         float overexposure = 64.f;
         hist.exposure = new float[]{overexposure, overexposure, overexposure, overexposure};
         int[][] histDataBase = hist.Compute(temp).clone();
-        float[] blackLevel = new float[4];
         for (int i = 0; i < 4; i++) {
             long histSum = 0;
             for (int j = 0; j < histDataBase[i].length; j++) {
@@ -257,19 +269,16 @@ public class PyramidAlignment implements AutoCloseable {
             for (int j = 0; j < histDataBase[i].length; j++) {
                 integration += histDataBase[i][j];
                 if (integration > histSum * 0.3) {
-                    blackLevel[i] = (j / (histDataBase[i].length - 1.f)) / overexposure;
-                    Log.d("PyramidAlignment", "blackLevel[" + i + "] = " + blackLevel[i]);
+                    alignBlackLevel[i] = (j / (histDataBase[i].length - 1.f)) / overexposure;
+                    Log.d("PyramidAlignment", "blackLevel[" + i + "] = " + alignBlackLevel[i]);
                     break;
                 }
             }
         }
 
-        //hist.exposure = new float[]{1.0f, 1.0f, 1.0f, 1.0f};
-        //histDataBase = hist.Compute(temp).clone();
-
         glProg.setLayout(8, 8, 1);
         glProg.useAssetProgram("alignment/normalizebl", true);
-        glProg.setVar("blackLevel", blackLevel);
+        glProg.setVar("blackLevel", alignBlackLevel);
         glProg.setVar("whiteLevel", 1.0f);
         glProg.setVar("sharpness", sharpness);
         glProg.setTexture("baseTexture", temp);
@@ -277,22 +286,20 @@ public class PyramidAlignment implements AutoCloseable {
         glProg.setTextureCompute("outTexture", base, true);
         glProg.computeAuto(base.mSize, 1);
 
-        //GLTexture histTexture = new GLTexture(new Point(1024,1), new GLFormat(GLFormat.DataType.FLOAT_32), BufferUtils.getFrom(histCurve), GL_LINEAR, GL_CLAMP_TO_EDGE);
-        GLTexture histTexture = new GLTexture(new Point(1024,1), new GLFormat(GLFormat.DataType.FLOAT_32), null, GL_LINEAR, GL_CLAMP_TO_EDGE);
-        GLTexture alterTexture = new GLTexture(new Point(1024,1), new GLFormat(GLFormat.DataType.FLOAT_32), null, GL_LINEAR, GL_CLAMP_TO_EDGE);
-        int levelcount = (int)(Math.log10(rawHalf.x)/Math.log10(downScalePerLevel))-1;
+        histCurveTex = new GLTexture(new Point(1024,1), new GLFormat(GLFormat.DataType.FLOAT_32), null, GL_LINEAR, GL_CLAMP_TO_EDGE);
+        alterCurveTex = new GLTexture(new Point(1024,1), new GLFormat(GLFormat.DataType.FLOAT_32), null, GL_LINEAR, GL_CLAMP_TO_EDGE);
+        levelcount = (int)(Math.log10(rawHalf.x)/Math.log10(downScalePerLevel))-1;
         if(levelcount <= 0) levelcount = 2;
-        int tile = 8;
 
         pyramid = new GLUtils.Pyramid();
         glUtils.createPyramidStore(levelcount, base, pyramid, false);
 
         pyramidAlter = new GLUtils.Pyramid();
         NoiseModeler modeler = parameters.noiseModeler;
-        float noiseS = modeler.baseModel[0].first.floatValue() +
+        noiseS = modeler.baseModel[0].first.floatValue() +
                 modeler.baseModel[1].first.floatValue() +
                 modeler.baseModel[2].first.floatValue();
-        float noiseO = modeler.baseModel[0].second.floatValue() +
+        noiseO = modeler.baseModel[0].second.floatValue() +
                 modeler.baseModel[1].second.floatValue() +
                 modeler.baseModel[2].second.floatValue();
         noiseS /= 3.f;
@@ -300,125 +307,90 @@ public class PyramidAlignment implements AutoCloseable {
         double noisempy = Math.pow(2.0, PhotonCamera.getSettings().mergeStrength);
         noiseS = (float)Math.max(noiseS * noisempy,1e-6f);
         noiseO = (float)Math.max(noiseO * noisempy,1e-6f);
-        double noise = Math.sqrt(noiseS + noiseO);
         Log.d("PyramidAlignment", "noise: " + Math.sqrt(noiseS + noiseO));
         inputAlter = new GLTexture(parameters.rawSize, new GLFormat(GLFormat.DataType.UNSIGNED_16, 1), null, GL_NEAREST, GL_MIRRORED_REPEAT);
+    }
 
-        int alignCount = 0;
-        for (int f = 1; f < images.size(); f++) {
-            ImageFrame frame = images.get(f);
-            Log.d("PyramidAlignment", "load:"+frame.pair.curlayer.name());
+    /**
+     * Aligns frame {@code ind} against the reference and packs its offsets
+     * into this instance's block of {@link #Result}. When {@code rawUpload}
+     * is non-null it must already contain that frame's RAW pixels (letting
+     * the caller reuse an upload); otherwise the frame buffer is uploaded
+     * here.
+     */
+    public void alignFrame(int ind, GLTexture rawUpload) {
+        ImageFrame frame = images.get(ind);
+        Log.d("PyramidAlignment", "load:"+frame.pair.curlayer.name());
+        if (rawUpload == null) {
             inputAlter.loadData(frame.buffer);
-            
-            // Compute alter frame histogram with exposure = 1.0 for exposure determination
-            /*glProg.setLayout(tile, tile, 1);
-            glProg.useAssetProgram("alignment/normalize", true);
-            glProg.setVar("whiteLevel", (float) (parameters.whiteLevel));
-            glProg.setVar("blackLevel", parameters.blackLevel);
-            glProg.setVar("exposure", 1.0f); // Use 1.0 exposure for histogram comparison
+        }
+        float exposure = 1.0f/frame.pair.layerMpy;
+
+        // Use normalize script to fill alter texture with computed exposure
+        glProg.setLayout(tile, tile, 1);
+        glProg.useAssetProgram("alignment/normalize", true);
+        glProg.setVar("whiteLevel", (float) (parameters.whiteLevel));
+        glProg.setVar("blackLevel", parameters.blackLevel);
+        glProg.setVar("blurSigma", blurSigma);
+        glProg.setVar("exposure", exposure);
+        glProg.setVar("noiseS", noiseS);
+        glProg.setVar("noiseO", noiseO);
+        glProg.setTexture("inTexture", inputAlter);
+        glProg.setTexture("gainMap", gainMap);
+        glProg.setTextureCompute("outTexture", temp, true);
+        glProg.computeAuto(temp.mSize, 1);
+
+        glProg.setLayout(8, 8, 1);
+        glProg.useAssetProgram("alignment/normalizebl", true);
+        glProg.setVar("blackLevel", alignBlackLevel);
+        glProg.setVar("whiteLevel", 1.0f);
+        glProg.setVar("sharpness", sharpness);
+        glProg.setTexture("baseTexture", temp);
+        glProg.setTexture("gainMap", gainMap);
+        glProg.setTextureCompute("outTexture", alter, true);
+        glProg.computeAuto(alter.mSize, 1);
+
+        Log.d("PyramidAlignment", "create alter");
+        glUtils.createPyramidStore(levelcount, alter, pyramidAlter, false);
+        Log.d("PyramidAlignment", "alter created");
+
+        // do pyramid alignment upscaling
+        for (int i = pyramidAlter.gauss.length - 2; i >= 0; i--) {
+
+            float integralNorm = (float)rawHalf.x * rawHalf.y/(pyramidAlter.gauss[i+1].mSize.x * pyramidAlter.gauss[i+1].mSize.y);
+            glProg.setDefine("TILE_AL", parameters.tile);
+            glProg.setDefine("OFFSETS", ALIGN_OFFSETS);
+            glProg.setLayout(parameters.tile / 2, parameters.tile / 2, 1);
+            glProg.useAssetProgram("alignment/align", true);
+            boolean first = (i == pyramidAlter.gauss.length - 2);
+            if (!first) {
+                glProg.setTexture("prevAlignment", pyramidAlter.gauss[i + 2]);
+            }
+            glProg.setTexture("baseTexture", pyramid.gauss[i]);
+            glProg.setTexture("alterTexture", pyramidAlter.gauss[i]);
+            glProg.setTexture("baseCurve", histCurveTex);
+            glProg.setTexture("alterCurve", alterCurveTex);
+            glProg.setTextureCompute("outTexture", pyramidAlter.gauss[i+1], true);
             glProg.setVar("noiseS", noiseS);
             glProg.setVar("noiseO", noiseO);
-            glProg.setTexture("inTexture", inputAlter);
-            glProg.setTexture("gainMap", gainMap);
-            glProg.setTextureCompute("outTexture", temp, true);
-            glProg.computeAuto(temp.mSize, 1);
-            
-            // Compute histogram for alter frame with 1x exposure
-            int[][] histDataAlter = hist.Compute(temp).clone();*/
-            
-            // Find optimal exposure using brute force histogram matching
-            //float exposure = 1.0f/findOptimalExposure(histDataBase, histDataAlter);
-            float exposure = 1.0f/frame.pair.layerMpy;
-            //Log.d("PyramidAlignment", "Computed exposure: " + exposure + " reference exposure: " + 1.0f/frame.pair.layerMpy);
-            
-            // Use normalize script to fill alter texture with computed exposure
-            glProg.setLayout(tile, tile, 1);
-            glProg.useAssetProgram("alignment/normalize", true);
-            glProg.setVar("whiteLevel", (float) (parameters.whiteLevel));
-            glProg.setVar("blackLevel", parameters.blackLevel);
-            glProg.setVar("blurSigma", blurSigma);
+            // Noise shrinks by sqrt(pixels averaged) per pyramid level,
+            // scaled by the prefilter's noise-reduction factor
+            // (normalize.glsl's gaussian: 1/sum(w^2)).
+            glProg.setVar("integralNorm", (float) Math.sqrt(integralNorm) * prefilterN);
+            glProg.setVar("significancy", ALIGN_SIGNIFICANCY);
+            glProg.setVar("first", first ? 1 : 0);
+            glProg.setVar("rawHalf", rawHalf);
             glProg.setVar("exposure", exposure);
-            glProg.setTexture("inTexture", inputAlter);
-            glProg.setTexture("gainMap", gainMap);
-            glProg.setTextureCompute("outTexture", temp, true);
-            glProg.computeAuto(temp.mSize, 1);
-
-
-            /*int[][] histData = hist.Compute(temp);
-
-
-            for (int i = 0; i < 4; i++) {
-                long histSum = 0;
-                for (int j = 0; j < histData[i].length; j++) {
-                    histSum += histData[i][j];
-                }
-                Log.d("PyramidAlignment", "histSum[" + i + "] = " + histSum);
-                long integration = 0;
-                for (int j = 0; j < histData[i].length; j++) {
-                    integration += histData[i][j];
-                    if (integration > histSum * 0.3) {
-                        blackLevel[i] = (j / (histData[i].length - 1.f))/ overexposure;
-                        Log.d("PyramidAlignment", "blackLevel[" + i + "] = " + blackLevel[i]);
-                        break;
-                    }
-                }
-            }*/
-
-            glProg.setLayout(8, 8, 1);
-            glProg.useAssetProgram("alignment/normalizebl", true);
-            glProg.setVar("blackLevel", blackLevel);
-            glProg.setVar("whiteLevel", 1.0f);
-            glProg.setVar("sharpness", sharpness);
-            glProg.setTexture("baseTexture", temp);
-            glProg.setTexture("gainMap", gainMap);
-            glProg.setTextureCompute("outTexture", alter, true);
-            glProg.computeAuto(alter.mSize, 1);
-
-            Log.d("PyramidAlignment", "create alter");
-            glUtils.createPyramidStore(levelcount, alter, pyramidAlter, false);
-            Log.d("PyramidAlignment", "alter created");
-
-            // do pyramid alignment upscaling
-            for (int i = pyramidAlter.gauss.length - 2; i >= 0; i--) {
-
-                float integralNorm = (float)rawHalf.x * rawHalf.y/(pyramidAlter.gauss[i+1].mSize.x * pyramidAlter.gauss[i+1].mSize.y);
-                glProg.setDefine("TILE_AL", parameters.tile);
-                glProg.setDefine("OFFSETS", ALIGN_OFFSETS);
-                glProg.setLayout(parameters.tile / 2, parameters.tile / 2, 1);
-                glProg.useAssetProgram("alignment/align", true);
-                boolean first = (i == pyramidAlter.gauss.length - 2);
-                if (!first) {
-                    glProg.setTexture("prevAlignment", pyramidAlter.gauss[i + 2]);
-                }
-                glProg.setTexture("baseTexture", pyramid.gauss[i]);
-                glProg.setTexture("alterTexture", pyramidAlter.gauss[i]);
-                glProg.setTexture("baseCurve", histTexture);
-                glProg.setTexture("alterCurve", alterTexture);
-                glProg.setTextureCompute("outTexture", pyramidAlter.gauss[i+1], true);
-                glProg.setVar("noiseS", noiseS);
-                glProg.setVar("noiseO", noiseO);
-                // Noise shrinks by sqrt(pixels averaged) per pyramid level,
-                // scaled by the prefilter's noise-reduction factor
-                // (normalize.glsl's gaussian: 1/sum(w^2)).
-                glProg.setVar("integralNorm", (float) Math.sqrt(integralNorm) * prefilterN);
-                glProg.setVar("significancy", ALIGN_SIGNIFICANCY);
-                glProg.setVar("first", first ? 1 : 0);
-                glProg.setVar("rawHalf", rawHalf);
-                glProg.setVar("exposure", exposure);
-                //glProg.computeAuto(new Point(alterPyramid.gauss[i].mSize.x/parameters.tile + 1,alterPyramid.gauss[i].mSize.y/parameters.tile + 1), 1);
-                glProg.computeManual(pyramidAlter.gauss[i].mSize.x/(parameters.tile/2) + 1,pyramidAlter.gauss[i].mSize.y/(parameters.tile/2) + 1, 1);
-            }
-            Point shift = alignmentShift(parameters, f);
-            // do alignment packing into single texture
-            glProg.setLayout(tile, tile, 1);
-            glProg.useAssetProgram("alignment/pack", true);
-            glProg.setTexture("alignTexture", pyramidAlter.gauss[1]);
-            glProg.setTextureCompute("outTexture", Result, true);
-            glProg.setVar("shift", shift);
-            glProg.computeAuto(parameters.alignmentSize, 1);
+            glProg.computeManual(pyramidAlter.gauss[i].mSize.x/(parameters.tile/2) + 1,pyramidAlter.gauss[i].mSize.y/(parameters.tile/2) + 1, 1);
         }
-        histTexture.close();
-        alterTexture.close();
+        Point shift = alignmentShift(parameters, ind);
+        // do alignment packing into single texture
+        glProg.setLayout(tile, tile, 1);
+        glProg.useAssetProgram("alignment/pack", true);
+        glProg.setTexture("alignTexture", pyramidAlter.gauss[1]);
+        glProg.setTextureCompute("outTexture", Result, true);
+        glProg.setVar("shift", shift);
+        glProg.computeAuto(parameters.alignmentSize, 1);
     }
 
     @Override
@@ -433,6 +405,8 @@ public class PyramidAlignment implements AutoCloseable {
         }
         inputAlter.close();
         gainMap.close();
+        if (histCurveTex != null) histCurveTex.close();
+        if (alterCurveTex != null) alterCurveTex.close();
         GLTexture.notClosed();
     }
 }
