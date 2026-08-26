@@ -131,7 +131,10 @@ public class Amaze extends Node {
             }
         }
         glProg.close();
-        GLES31.glFinish();   // one sync per shot: honest timing + safe scratch close
+        // No glFinish: the per-tile memory barriers already order every
+        // dispatch, texture deletions are deferred by the driver, and
+        // downstream reads follow the command stream. Draining the whole
+        // ~900-dispatch backlog here only stalled the CPU for timing looks.
         endT("amaze_tiles");
 
         cfa.close();

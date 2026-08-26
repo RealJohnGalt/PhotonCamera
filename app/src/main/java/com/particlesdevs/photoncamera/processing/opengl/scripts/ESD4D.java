@@ -30,7 +30,10 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static android.opengl.GLES20.GL_CLAMP_TO_EDGE;
 import static android.opengl.GLES20.GL_LINEAR;
@@ -295,6 +298,11 @@ public class ESD4D extends GLOneScript {
     /** Dense optical-flow alignment (FlowNet); non-null when useNcnnFlow ran. */
     FlowNetAlignment flowNetAlignment;
     PyramidAlignment pyramidAlignment;
+    // KernelNet inference runs on a helper thread, overlapped with the first
+    // merge-loop frame; joined right before its first consumer.
+    ExecutorService kernelNetExecutor;
+    Future<KernelNetResult> kernelNetFuture;
+    boolean kernelNetJoined = false;
     @Tunable(title = "HotPixels detect threshold", category = "Merge", description = "Higher multiplier detects less hotpixels", min = 0.5f, max = 5.0f, step = 0.1f, defaultValue = 1.5f)
     double detectThr;
 
@@ -817,22 +825,26 @@ public class ESD4D extends GLOneScript {
         glProg.setTextureCompute("outTexture",brightMap, true);
         glProg.computeAuto(brightMap.mSize, 1);
         exportBrightMap();
-        // KernelNet's input derives from the reference frame only, so its
-        // inference is independent of the alignment/merge loop below. Run it
-        // on a worker thread concurrently with alignment (merge00 / FlowNet /
-        // mergeAlign) and collect it just before the first combine pass needs
-        // kernelsMap. The inference (and the model load inside it) touches no
-        // GL state; the kernelsMap build/upload must rejoin the GL thread.
-        final float kernelSigmaArg = kernelSigma * noiseMpy;
-        final AtomicReference<KernelNetResult> kernelNetResult = new AtomicReference<>();
-        Thread kernelNetThread = new Thread(() -> {
-            try {
-                kernelNetResult.set(runKernelNetInference(kernelSigmaArg));
-            } catch (Throwable t) {
-                Log.e("ESD4D", "KernelNet worker failed", t);
-            }
-        }, "KernelNet-inference");
-        kernelNetThread.start();
+        // KernelNet inference (~40-170 ms of CPU/ncnn work) runs concurrently
+        // with the GPU-side merge below; joined just before its first consumer
+        // (mergeCombineWeight in the first loop iteration).
+        kernelNetExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "KernelNet");
+            t.setDaemon(true);
+            return t;
+        });
+        final float knSigma = kernelSigma * noiseMpy;
+        kernelNetFuture = kernelNetExecutor.submit(() -> runKernelNetInference(knSigma));
+        // brightMap GPU texture is no longer needed after the CPU luma
+        // copy (brightMapCPU) and KernelNet inference. The texture is
+        // ~32 MB @64MP (packed 4:1, FLOAT16x4) and would otherwise stay
+        // alive through the entire merge loop (~15 iterations) and the
+        // final merge2o. Release it immediately with no quality change
+        // — brightMapCPU/kernelsMapCPU remain valid.
+        if (brightMap != null) {
+            try { brightMap.close(); } catch (Exception ignored) {}
+            brightMap = null;
+        }
 
         // Alignment runs after the KernelNet worker is launched so the CPU
         // ncnn inference overlaps the whole alignment pass (pyramid or FlowNet)
@@ -969,34 +981,10 @@ public class ESD4D extends GLOneScript {
 
             Log.d("ESD4D", "create diff");
 
-            // First combine pass: collect the KernelNet result that has been
-            // running concurrently with alignment and this frame's merge00 /
-            // mergeAlign work. Waits only for any inference remainder; the
-            // texture build below needs the GL thread anyway.
-            if (kernelNetThread != null) {
-                try {
-                    kernelNetThread.join();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-                kernelNetThread = null;
-                kernelsMap = createKernelsMap(kernelNetResult.get());
-                // The CPU luma readback (brightMapCPURaw/brightMapCPU) only fed
-                // KernelNet inference; every later stage consumes kernelsMap (GPU)
-                // / kernelsMapCPU. Free the ~64 MB native backing instead of
-                // pinning it through the whole merge loop and merge2o. The brightMap
-                // GPU texture (~32 MB @64MP) is also dead now, so release it too.
-                if (brightMapCPURaw != null) {
-                    Allocator.free(brightMapCPURaw);
-                    brightMapCPURaw = null;
-                }
-                brightMapCPU = null;
-                if (brightMap != null) {
-                    try { brightMap.close(); } catch (Exception ignored) {}
-                    brightMap = null;
-                }
-            }
-
+            // First consumer of the KernelNet map: join the background
+            // inference here, having overlapped it with this frame's RAW
+            // upload, normalize and mergeAlign passes.
+            joinKernelNet();
             glProg.setLayout(tile, tile, 1);
             glProg.useAssetProgram("merge/mergeCombineWeight0", true);
             glProg.setVar("cfaPattern", parameters.cfaPattern);
@@ -1040,6 +1028,8 @@ public class ESD4D extends GLOneScript {
             }
             endT();
         }
+        // Safety net for degenerate frame lists that never reach the loop.
+        joinKernelNet();
 
         // baseDiff's last consumer was this loop's final mergeCombineWeight
         // pass (each iteration writes it, then feeds it back); merge2o only
@@ -1110,6 +1100,34 @@ public class ESD4D extends GLOneScript {
         }
     }
 
+    /** Waits for the background KernelNet inference and materialises its
+     *  GPU map; no-op after the first call. Must run on the GL thread. */
+    private void joinKernelNet() {
+        if (kernelNetJoined) return;
+        kernelNetJoined = true;
+        KernelNetResult kernelParams = null;
+        try {
+            kernelParams = kernelNetFuture.get(30, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            Log.e("ESD4D", "KernelNet inference failed, continuing without kernel map", e);
+        }
+        kernelsMap = createKernelsMap(kernelParams);
+        exportKernelsMap();
+        // The CPU luma readback only fed KernelNet inference; every later
+        // stage consumes kernelsMap (GPU) / kernelsMapCPU. Free the native
+        // backing buffer (~64 MB at 64 MP).
+        if (brightMapCPURaw != null) {
+            Allocator.free(brightMapCPURaw);
+            brightMapCPURaw = null;
+        }
+        brightMapCPU = null;
+        if (kernelNetExecutor != null) {
+            kernelNetExecutor.shutdown();
+            kernelNetExecutor = null;
+        }
+        kernelNetFuture = null;
+    }
+
     /**
      * Converts a KernelNet parameter map (channel-major s1, s2, rho floats at half-res)
      * into an RGBA16F texture for the anisotropic Gaussian filter: texel = (s1, s2, rho, 1).
@@ -1141,6 +1159,15 @@ public class ESD4D extends GLOneScript {
         kernelsMapCPU = FloatBuffer.wrap(rgba);
         kernelsMapCPUSize = new Point(w, h);
         return map;
+    }
+
+    public void exportKernelsMap() {
+        if (kernelsMap == null) return;
+        kernelsMap.BufferLoad();
+        ByteBuffer raw = kernelsMap.textureBuffer(new GLFormat(GLFormat.DataType.FLOAT_32, 4), true);
+        raw.order(ByteOrder.nativeOrder());
+        kernelsMapCPU = raw.asFloatBuffer();
+        kernelsMapCPUSize = new Point(kernelsMap.mSize.x, kernelsMap.mSize.y);
     }
 
     @Override
