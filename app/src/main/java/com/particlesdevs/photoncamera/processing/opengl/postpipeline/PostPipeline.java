@@ -321,10 +321,10 @@ public class PostPipeline extends GLBasePipeline {
                     + " map=" + rotatedSize.x + "x" + rotatedSize.y);
         }
         GLFormat format = new GLFormat(GLFormat.DataType.FLOAT_16, 4);
-        // Dummy output keeps the original driver path (Direct allocation) while
-        // GLImage/GLCoreBlockProcessing null-guards prevent the NPE.
+        // This pass never calls drawBlocksToOutput, so Allocate.None skips
+        // the unused w*h*8 native mOutBuffer (~515 MB at 64 MP).
         GLImage output = new GLImage(rotatedSize, format, false);
-        GLCoreBlockProcessing glproc = new GLCoreBlockProcessing(rotatedSize, output, format, GLDrawParams.Allocate.Direct);
+        GLCoreBlockProcessing glproc = new GLCoreBlockProcessing(rotatedSize, output, format, GLDrawParams.Allocate.None);
         // Do not destroy the previous EGL context here: PostPipeline historically
         // leaked the first context until final pipeline.close(), and destroying
         // it before GLTexture re-creation caused SEGV_MAPERR on waffle/Adreno.
@@ -410,6 +410,10 @@ public class PostPipeline extends GLBasePipeline {
             GLES30.glViewport(0, 0, rotatedSize.x, rotatedSize.y);
             prog.draw();
             checkGlError("scene-luma draw");
+            // The linear snapshot is only sampled by the scene-luma pass;
+            // free its GPU copy before the histograms and comparison draw.
+            linTex.close();
+            linTex = null;
 
             // Anchor: medians of the rendering and of the scene plane. Median
             // (not top-percentile) anchoring is required - with large blown
@@ -450,21 +454,29 @@ public class PostPipeline extends GLBasePipeline {
             // Release the GPU resources before the CPU-side bitmap work.
             sdrTex.close();
             lTex.close();
-            linTex.close();
 
-            // Off-heap staging for the readback: a heap ByteBuffer here would
-            // be Java-accounted (~258 MB at 64 MP).
-            ByteBuffer gm = Allocator.allocate(gw * gh * 4);
-            final boolean gmNative = gm != null;
-            if (!gmNative) gm = ByteBuffer.allocate(gw * gh * 4);
-            Bitmap gmBmp;
-            try {
-                outTex.textureBuffer(new GLFormat(GLFormat.DataType.SIMPLE_8, 4), gm);
-                gm.rewind();
-                gmBmp = Bitmap.createBitmap(gw, gh, Bitmap.Config.ARGB_8888);
-                gmBmp.copyPixelsFromBuffer(gm);
-            } finally {
-                if (gmNative) Allocator.free(gm);
+            // Read the gain map straight into its final bitmap - no
+            // intermediate full-frame buffer.
+            Bitmap gmBmp = Bitmap.createBitmap(gw, gh, Bitmap.Config.ARGB_8888);
+            ByteBuffer wrapped = Allocator.wrapBitmap(gmBmp);
+            if (wrapped != null) {
+                try {
+                    outTex.textureBuffer(new GLFormat(GLFormat.DataType.SIMPLE_8, 4), wrapped);
+                } finally {
+                    Allocator.unlockBitmap(gmBmp);
+                }
+            } else {
+                // Fallback: stage through memory as before (~258 MB at 64 MP).
+                ByteBuffer gm = Allocator.allocate(gw * gh * 4);
+                final boolean gmNative = gm != null;
+                if (!gmNative) gm = ByteBuffer.allocate(gw * gh * 4);
+                try {
+                    outTex.textureBuffer(new GLFormat(GLFormat.DataType.SIMPLE_8, 4), gm);
+                    gm.rewind();
+                    gmBmp.copyPixelsFromBuffer(gm);
+                } finally {
+                    if (gmNative) Allocator.free(gm);
+                }
             }
             outTex.close();
 
