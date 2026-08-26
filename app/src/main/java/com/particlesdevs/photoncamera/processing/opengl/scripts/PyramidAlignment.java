@@ -275,6 +275,7 @@ public class PyramidAlignment implements AutoCloseable {
                 }
             }
         }
+        hist.close();
 
         glProg.setLayout(8, 8, 1);
         glProg.useAssetProgram("alignment/normalizebl", true);

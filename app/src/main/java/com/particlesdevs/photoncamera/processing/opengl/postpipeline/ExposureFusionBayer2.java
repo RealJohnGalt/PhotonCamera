@@ -149,6 +149,17 @@ public class ExposureFusionBayer2 extends Node {
         return out;
     }
     GLHistogram glHistogram;
+
+    @Override
+    public void AfterRun() {
+        // The histogram's SSBO buffers are only read while the node runs;
+        // without this they leak (~4 KB per shot).
+        if (glHistogram != null) {
+            glHistogram.close();
+            glHistogram = null;
+        }
+    }
+
     Point initialSize;
     Point WorkSize;
     
