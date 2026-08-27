@@ -98,6 +98,11 @@ Java_com_particlesdevs_photoncamera_processing_ml_NcnnMl_nativeEnsureInit(
 
 struct FlowNetCtx {
     ncnn::Net net;
+    // Cached fixed-size input Mats, (re)created lazily when the inference
+    // dimensions change and reused across calls so we don't allocate + free
+    // ~2.4 MB of ncnn Mats on every aligned frame in the burst.
+    int cachedW = 0, cachedH = 0;
+    ncnn::Mat in0, in1;
 };
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -159,6 +164,29 @@ Java_com_particlesdevs_photoncamera_processing_ml_FlowNetNcnnProcessor_nativeCre
         return 0;
     }
 
+#if NCNN_VULKAN
+    // Persistent, device-pooled Vulkan allocators. Without these, every
+    // Extractor (= one flow inference per aligned frame in the burst) builds
+    // its own VkUnrollBlobAllocator + VkStagingBufferAllocator and tears them
+    // down afterwards, so each blob pays vkAllocateMemory / vkFreeMemory in the
+    // driver — the "~ms per buffer, vulkan slower than CPU" stall. acquire_*()
+    // hands out refcounted device-wide pools that recycle blocks across
+    // extractions instead. Mirrors the KernelNet setup below.
+    if (ctx->net.opt.use_vulkan_compute &&
+        !(getenv("FLOWNET_NOALLOC") && getenv("FLOWNET_NOALLOC")[0] == '1')) {
+        const ncnn::VulkanDevice* vkdev = ctx->net.vulkan_device();
+        if (vkdev != nullptr) {
+            ncnn::VkAllocator* blobPool = vkdev->acquire_blob_allocator();
+            ctx->net.opt.blob_vkallocator = blobPool;
+            ctx->net.opt.workspace_vkallocator = blobPool;
+            ctx->net.opt.staging_vkallocator = vkdev->acquire_staging_allocator();
+            LOGI("flownet: persistent vk allocators attached (pooled)");
+        } else {
+            LOGE("flownet: vulkan_device null, cannot attach pooled allocators");
+        }
+    }
+#endif
+
     LOGI("flownet init took %lldms (vulkan=%d)", (long long)(nowMs() - t0),
          ctx->net.opt.use_vulkan_compute);
     return (jlong)ctx;
@@ -184,10 +212,18 @@ Java_com_particlesdevs_photoncamera_processing_ml_FlowNetNcnnProcessor_nativeRun
 
     const int plane = width * height;
 
-    // Deinterleave RGBA→BGR and create ncnn Mats (CHW float32, values 0..255).
+    // Deinterleave RGBA→BGR into cached ncnn Mats (CHW float32, values 0..255).
+    // The Mats are reused across calls (same burst shape) to avoid per-frame
+    // allocation; (re)created only when the inference dimensions change.
     // The model divides by 255 internally (BinaryOp div in the param graph).
-    ncnn::Mat in0(width, height, 3);
-    ncnn::Mat in1(width, height, 3);
+    if (width != ctx->cachedW || height != ctx->cachedH) {
+        ctx->in0.create(width, height, 3);
+        ctx->in1.create(width, height, 3);
+        ctx->cachedW = width;
+        ctx->cachedH = height;
+    }
+    ncnn::Mat& in0 = ctx->in0;
+    ncnn::Mat& in1 = ctx->in1;
     {
         float* c0 = (float*)in0.channel(0); // B
         float* c1 = (float*)in0.channel(1); // G
