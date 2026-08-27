@@ -4,9 +4,12 @@ import android.graphics.Bitmap;
 import android.graphics.Point;
 import com.particlesdevs.photoncamera.util.Log;
 
+import com.particlesdevs.photoncamera.processing.opengl.GLDrawParams;
 import com.particlesdevs.photoncamera.processing.opengl.GLFormat;
 import com.particlesdevs.photoncamera.processing.opengl.GLTexture;
 import com.particlesdevs.photoncamera.processing.opengl.nodes.Node;
+
+import java.nio.ByteBuffer;
 
 public class AEC extends Node {
     public AEC(String name) {
@@ -83,7 +86,16 @@ public class AEC extends Node {
         //GLTexture r2 = glUtils.mpy(r1,new float[]{reg,reg,reg});
         GLFormat bitmapF = new GLFormat(GLFormat.DataType.UNSIGNED_8, 4);
         Bitmap preview = Bitmap.createBitmap(r1.mSize.x, r1.mSize.y, bitmapF.getBufferedImageConfig());
-        preview.copyPixelsFromBuffer(glInt.glProcessing.drawBlocksToOutput(r1.mSize, bitmapF));
+        // P0-1 made drawBlocksToOutput off-heap (no Java-heap 64-256MB at
+        // full res, here 40x40 ~6.4KB). Keep the tiny copyPixelsFromBuffer
+        // (6KB memcpy) – zero-copy via wrapBitmap would require arbitrary-size
+        // FBO, not justified for 40x40 histogram.
+        ByteBuffer buf = glInt.glProcessing.drawBlocksToOutput(r1.mSize, bitmapF, GLDrawParams.Allocate.Direct);
+        preview.copyPixelsFromBuffer(buf);
+        // Free native buffer if it was Allocator-backed (Heap path now Direct).
+        // Direct ByteBuffers from Allocator need explicit free; allocateDirect
+        // ones are GC-managed.
+        try { com.particlesdevs.photoncamera.util.Allocator.free(buf); } catch (Exception ignored) {}
         if (basePipeline.mSettings.DebugData) glUtils.SaveProgResult(r1.mSize, "debAEC");
         ((PostPipeline) basePipeline).AecCorr = MpyAEC(Histogram(preview));
         WorkingTexture = previousNode.WorkingTexture;

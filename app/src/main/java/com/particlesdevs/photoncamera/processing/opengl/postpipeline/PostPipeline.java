@@ -354,24 +354,15 @@ public class PostPipeline extends GLBasePipeline {
             // The snapshot is only needed until it is resident on the GPU.
             releaseDemosaicLinear();
 
-            // Off-heap staging for the base image upload: GLImage(Bitmap)
-            // would allocate a Java-accounted direct copy of the whole bitmap
-            // (~258 MB at 64 MP).
-            GLTexture sdrTex;
-            ByteBuffer sdrStaging = Allocator.allocate(sdr.getByteCount());
-            if (sdrStaging != null) {
-                try {
-                    sdr.copyPixelsToBuffer(sdrStaging);
-                    sdrStaging.rewind();
-                    sdrTex = new GLTexture(new Point(sdr.getWidth(), sdr.getHeight()),
-                            new GLFormat(GLFormat.DataType.SIMPLE_8, 4), sdrStaging, GL_LINEAR, GL_CLAMP_TO_EDGE);
-                } finally {
-                    Allocator.free(sdrStaging);
-                }
-            } else {
-                GLImage sdrImage = new GLImage(sdr);
-                sdrTex = new GLTexture(sdrImage);
-            }
+            // Zero-copy upload: GLTexture(Bitmap) uses GLUtils.texImage2D which
+            // uploads directly from the bitmap's native pixels without any
+            // intermediate ByteBuffer. Previously this path allocated a full-size
+            // staging buffer and did copyPixelsToBuffer -> ~64 MB @16MP
+            // (4000x4000 ARGB_8888) and ~258 MB @64MP (9248x6936) plus an extra
+            // memcpy and native malloc/free per Ultra HDR capture. The fallback
+            // GLImage(Bitmap) would duplicate via allocateDirect+copyPixelsToBuffer
+            // with the same cost. Now retained on GPU only.
+            GLTexture sdrTex = new GLTexture(sdr, GL_LINEAR, GL_CLAMP_TO_EDGE);
 
             // Lens-shading GainMap for flat-fielding the scene plane (see sceneluma.glsl).
             // Must match the map used on the SDR path (Initial / tofloat) so the ratio
