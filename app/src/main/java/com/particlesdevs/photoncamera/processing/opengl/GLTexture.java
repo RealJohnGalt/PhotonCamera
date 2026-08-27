@@ -28,6 +28,9 @@ public class GLTexture implements AutoCloseable {
     public final GLFormat mFormat;
     private static boolean[] ids = new boolean[256];
     private static int[] textures = new int[256];
+    private static boolean[] pinned = new boolean[256];
+    private int slotIndex = -1;
+    private boolean isPinned = false;
     public GLTexture(GLTexture in,GLFormat format) {
         this(in.mSize,new GLFormat(format),null,in.mFormat.filter,in.mFormat.wrap,0);
     }
@@ -90,6 +93,7 @@ public class GLTexture implements AutoCloseable {
                 //TexID[0] = i;
                 textures[i] = TexID[0];
                 ids[i] = true;
+                slotIndex = i;
                 break;
             }
         }
@@ -135,6 +139,7 @@ public class GLTexture implements AutoCloseable {
                 }
                 textures[i] = TexID[0];
                 ids[i] = true;
+                slotIndex = i;
                 break;
             }
         }
@@ -165,6 +170,7 @@ public class GLTexture implements AutoCloseable {
                 //TexID[0] = i;
                 textures[i] = TexID[0];
                 ids[i] = true;
+                slotIndex = i;
                 break;
             }
         }
@@ -293,6 +299,20 @@ public class GLTexture implements AutoCloseable {
                 ", mFormat=" + mFormat +
                 '}';
     }
+    /** Pin this texture so {@link #closeAll()} does not delete it (GPU retention). */
+    public void pin() {
+        isPinned = true;
+        if (slotIndex >= 0 && slotIndex < pinned.length) pinned[slotIndex] = true;
+    }
+
+    /** Unpin and allow normal deletion. */
+    public void unpin() {
+        isPinned = false;
+        if (slotIndex >= 0 && slotIndex < pinned.length) pinned[slotIndex] = false;
+    }
+
+    public boolean isPinned() { return isPinned; }
+
     public static void notClosed(){
         StringBuilder str = new StringBuilder();
         for(int i =0; i<ids.length;i++){
@@ -307,17 +327,32 @@ public class GLTexture implements AutoCloseable {
     public static void closeAll(){
         for(int i =0; i<ids.length;i++){
             if(ids[i]) {
+                if (pinned[i]) {
+                    // Retained for Ultra HDR GPU path — do not delete.
+                    continue;
+                }
                 glDeleteTextures(1,new int[]{textures[i]},0);
                 ids[i] = false;
             }
         }
-        count = 0;
+        // Recompute count to last non-pinned live slot
+        int last = 0;
+        for(int i=ids.length-1;i>=0;i--) if(ids[i]) { last=i; break; }
+        count = last;
     }
 
     @Override
     public void close() {
         glDeleteTextures(1,new int[]{mTextureID},0);
-        ids[mTextureID] = false;
+        // ids is indexed by slot, not GL name — handle both for safety
+        if (slotIndex >= 0 && slotIndex < ids.length) {
+            ids[slotIndex] = false;
+            pinned[slotIndex] = false;
+        }
+        if (mTextureID >= 0 && mTextureID < ids.length) {
+            // legacy fallback (previous bug: used GL name as index)
+            try { ids[mTextureID] = false; pinned[mTextureID] = false; } catch (Exception ignored) {}
+        }
         //Log.d("GLTexture","close ID:"+mTextureID);
         if(isBuffered) glDeleteBuffers(1,new int[]{mBuffer},0);
     }

@@ -96,6 +96,11 @@ public class PostPipeline extends GLBasePipeline {
     public ByteBuffer demosaicLinear;
     public Point demosaicLinearSize;
 
+    /** GPU-resident copy of the post-demosaic linear buffer (8 B/pixel RGBA16F). */
+    public GLTexture demosaicLinearTex;
+    public Point demosaicLinearTexSize;
+    private GLCoreBlockProcessing retainedProc;
+
     public PostPipeline() {
         super("PostPipeline");
     }
@@ -230,7 +235,56 @@ public class PostPipeline extends GLBasePipeline {
 
     /** Called from Initial.Run (first pass) to keep the linear scene buffer. */
     public void captureDemosaicLinear(GLTexture tex) {
-        if (mCaptured || demosaicLinear != null) return;
+        if (mCaptured || demosaicLinear != null || demosaicLinearTex != null) return;
+        // --- P2:7 GPU retention: keep the linear buffer on GPU via a copy
+        // that survives closeAll, instead of readback -> CPU -> re-upload.
+        // 16MP *8 B/p = ~128 MB GPU; 64MP = ~515 MB GPU but no CPU staging,
+        // no glReadPixels stall, and no second upload.
+        try {
+            if (tex != null && tex.mSize != null && glint != null && glint.glProcessing != null && glint.glProgram != null) {
+                GLTexture copy = new GLTexture(new Point(tex.mSize), new GLFormat(GLFormat.DataType.FLOAT_16, 4), null, GL_LINEAR, GL_CLAMP_TO_EDGE);
+                GLProg prog = glint.glProgram;
+                prog.useProgram(
+                        "#version 310 es\n" +
+                        "precision highp float;\n" +
+                        "precision highp sampler2D;\n" +
+                        "uniform sampler2D InputBuffer;\n" +
+                        "uniform int yOffset;\n" +
+                        "out vec4 Output;\n" +
+                        "void main(){ ivec2 xy = ivec2(gl_FragCoord.xy) + ivec2(0, yOffset); Output = texelFetch(InputBuffer, xy, 0); }\n"
+                );
+                prog.setTexture("InputBuffer", tex);
+                prog.drawBlocks(copy);
+                prog.closed = true;
+                int err = GLES30.glGetError();
+                if (err != GLES30.GL_NO_ERROR) {
+                    Log.w("PostPipeline", "GPU copy glError 0x" + Integer.toHexString(err) + ", falling back to CPU");
+                    try { copy.close(); } catch (Exception ignored) {}
+                    throw new RuntimeException("GPU copy failed");
+                }
+                copy.pin();
+                demosaicLinearTex = copy;
+                demosaicLinearTexSize = new Point(copy.mSize.x, copy.mSize.y);
+                retainedProc = glint.glProcessing;
+                demosaicLinearHalfFloat = true;
+                demosaicLinearSize = new Point(tex.mSize.x, tex.mSize.y); // keep for compatibility checks
+                mCaptured = true;
+                Log.d("PostPipeline", "GPU retention: demosaicLinear kept on GPU " + tex.mSize.x + "x" + tex.mSize.y + " (~" + (tex.mSize.x * (long)tex.mSize.y * 8 / 1024 / 1024) + " MB)");
+                return;
+            }
+        } catch (Exception e) {
+            Log.w("PostPipeline", "GPU retention failed, falling back to CPU readback", e);
+            try {
+                if (demosaicLinearTex != null) {
+                    demosaicLinearTex.unpin();
+                    demosaicLinearTex.close();
+                }
+            } catch (Exception ignored) {}
+            demosaicLinearTex = null;
+            demosaicLinearTexSize = null;
+            retainedProc = null;
+        }
+        // Fallback: CPU readback (original path)
         tex.BindBuffer();
         // The source texture is RGBA16F, so a packed GL_HALF_FLOAT transfer
         // stores the identical bits at half the memory of a GL_FLOAT readback
@@ -257,11 +311,27 @@ public class PostPipeline extends GLBasePipeline {
 
     /** Frees the native linear scene snapshot; safe to call repeatedly. */
     public void releaseDemosaicLinear() {
+        if (demosaicLinearTex != null) {
+            try {
+                demosaicLinearTex.unpin();
+                demosaicLinearTex.close();
+            } catch (Exception ignored) {}
+            demosaicLinearTex = null;
+            demosaicLinearTexSize = null;
+        }
         if (demosaicLinear != null) {
             Allocator.free(demosaicLinear);
             demosaicLinear = null;
         }
         demosaicLinearSize = null;
+        // retainedProc is the leaked EGL context from the first pass; it is
+        // closed in close() (final pipeline teardown), not here, so the
+        // shared second context remains valid until then.
+    }
+
+    /** Whether a GPU-resident linear snapshot is available. */
+    public boolean hasGpuDemosaicLinear() {
+        return demosaicLinearTex != null && demosaicLinearTexSize != null;
     }
 
     /**
@@ -293,7 +363,9 @@ public class PostPipeline extends GLBasePipeline {
      * @return the encoded RGBA8 gain map plus its dimensions, downsample and scale
      */
     public GainMapRaw RunHDRGainMap(Parameters parameters, Bitmap sdr, int down, float scale) {
-        if (demosaicLinear == null || demosaicLinearSize == null) {
+        boolean hasGpu = demosaicLinearTex != null && demosaicLinearTexSize != null;
+        boolean hasCpu = demosaicLinear != null && demosaicLinearSize != null;
+        if (!hasGpu && !hasCpu) {
             throw new IllegalStateException("Linear buffer missing; Run() must complete first with ultraHdr enabled");
         }
         mParameters = parameters;
@@ -324,7 +396,18 @@ public class PostPipeline extends GLBasePipeline {
         // This pass never calls drawBlocksToOutput, so Allocate.None skips
         // the unused w*h*8 native mOutBuffer (~515 MB at 64 MP).
         GLImage output = new GLImage(rotatedSize, format, false);
-        GLCoreBlockProcessing glproc = new GLCoreBlockProcessing(rotatedSize, output, format, GLDrawParams.Allocate.None);
+        GLCoreBlockProcessing glproc;
+        if (hasGpu && retainedProc != null && retainedProc.getEGLContext() != null) {
+            try {
+                glproc = new GLCoreBlockProcessing(rotatedSize, output, format, GLDrawParams.Allocate.None, retainedProc.getEGLContext());
+                Log.d("PostPipeline", "RunHDRGainMap: using shared EGL context for GPU retention");
+            } catch (Exception e) {
+                Log.w("PostPipeline", "Shared context failed, falling back to new context", e);
+                glproc = new GLCoreBlockProcessing(rotatedSize, output, format, GLDrawParams.Allocate.None);
+            }
+        } else {
+            glproc = new GLCoreBlockProcessing(rotatedSize, output, format, GLDrawParams.Allocate.None);
+        }
         // Do not destroy the previous EGL context here: PostPipeline historically
         // leaked the first context until final pipeline.close(), and destroying
         // it before GLTexture re-creation caused SEGV_MAPERR on waffle/Adreno.
@@ -334,8 +417,9 @@ public class PostPipeline extends GLBasePipeline {
 
         // Defensive: the measured linear buffer must match the pipeline input size,
         // otherwise the scene sampling is out of bounds and the gain map is garbage.
-        if (demosaicLinearSize.x != workSize.x || demosaicLinearSize.y != workSize.y) {
-            throw new IllegalStateException("Linear buffer size " + demosaicLinearSize
+        Point linearSize = hasGpu ? demosaicLinearTexSize : demosaicLinearSize;
+        if (linearSize.x != workSize.x || linearSize.y != workSize.y) {
+            throw new IllegalStateException("Linear buffer size " + linearSize
                     + " does not match workSize " + workSize
                     + "; cannot measure scene plane");
         }
@@ -343,7 +427,17 @@ public class PostPipeline extends GLBasePipeline {
         GLTexture gainTex = null;
         try {
             GLTexture linTex;
-            if (demosaicLinearHalfFloat) {
+            boolean isGpuRetention = hasGpu;
+            if (isGpuRetention) {
+                // GPU retention: use the pinned texture directly, no upload.
+                // Transfer ownership: clear fields without closing the GL texture.
+                linTex = demosaicLinearTex;
+                demosaicLinearTex = null;
+                demosaicLinearTexSize = null;
+                // demosaicLinearSize kept for compatibility until release
+                // retainedProc stays alive for shared context lifetime
+                Log.d("PostPipeline", "RunHDRGainMap: using GPU-resident demosaicLinearTex, no CPU upload");
+            } else if (demosaicLinearHalfFloat) {
                 linTex = new GLTexture(demosaicLinearSize,
                         new GLFormat(GLFormat.DataType.FLOAT_16, 4), null, GL_LINEAR, GL_CLAMP_TO_EDGE);
                 linTex.loadHalfFloat(demosaicLinear);
@@ -352,7 +446,14 @@ public class PostPipeline extends GLBasePipeline {
                         new GLFormat(GLFormat.DataType.FLOAT_16, 4), demosaicLinear);
             }
             // The snapshot is only needed until it is resident on the GPU.
-            releaseDemosaicLinear();
+            // For CPU path this frees the native ByteBuffer; for GPU path the
+            // texture is already GPU-resident and will be closed after sceneluma.
+            if (!isGpuRetention) {
+                releaseDemosaicLinear();
+            } else {
+                // Clear CPU-side size marker without freeing GPU texture
+                demosaicLinearSize = null;
+            }
 
             // Zero-copy upload: GLTexture(Bitmap) uses GLUtils.texImage2D which
             // uploads directly from the bitmap's native pixels without any
@@ -547,6 +648,17 @@ public class PostPipeline extends GLBasePipeline {
     public void close() {
         // Safety net for paths where the gain-map pass never ran.
         releaseDemosaicLinear();
+        if (retainedProc != null) {
+            try {
+                // retainedProc is the first-pass EGL context that hosts the
+                // pinned demosaicLinearTex. The current glint holds the second
+                // (shared) context; both must be terminated.
+                if (glint == null || glint.glProcessing != retainedProc) {
+                    retainedProc.close();
+                }
+            } catch (Exception ignored) {}
+            retainedProc = null;
+        }
         super.close();
     }
 

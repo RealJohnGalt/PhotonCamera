@@ -50,6 +50,12 @@ public class GLCoreBlockProcessing extends GLContext implements AutoCloseable {
         allocation = alloc;
         mOut = out;
     }
+
+    public GLCoreBlockProcessing(Point size, GLImage out, GLFormat glFormat, GLDrawParams.Allocate alloc, android.opengl.EGLContext shareContext) {
+        this(size, glFormat, alloc, shareContext);
+        allocation = alloc;
+        mOut = out;
+    }
     public GLCoreBlockProcessing(Point size, GLImage out, GLFormat glFormat) {
         this(size, glFormat, GLDrawParams.Allocate.Direct);
         mOut = out;
@@ -82,6 +88,28 @@ public class GLCoreBlockProcessing extends GLContext implements AutoCloseable {
             // triggers GC/OOM. Use off-heap direct buffer (GC-managed, no
             // native leak accounting) to keep peak off the Java heap.
             // Example: 16MP ARGB_8888 64 MB heap -> 0 heap, 64 MP 256 MB -> 0 heap.
+            mOutBuffer = ByteBuffer.allocateDirect(capacity);
+        }
+    }
+
+    /** Shared-context constructor for Ultra HDR GPU retention (shares textures with {@code shareContext}). */
+    public GLCoreBlockProcessing(Point size, GLFormat glFormat, GLDrawParams.Allocate alloc, android.opengl.EGLContext shareContext) {
+        super(size.x, GLDrawParams.TileSize, shareContext);
+        allocation = alloc;
+        mglFormat = glFormat;
+        mOutWidth = size.x;
+        mOutHeight = size.y;
+        mBlockBuffer = ByteBuffer.allocateDirect(mOutWidth * GLDrawParams.TileSize * mglFormat.mFormat.mSize * mglFormat.mChannels);
+        glGenFramebuffers(1,bindFB,0);
+        glGenRenderbuffers(1,bindRB,0);
+        glBindRenderbuffer(GL_RENDERBUFFER,bindRB[0]);
+        glRenderbufferStorage(GL_RENDERBUFFER, glFormat.getGLFormatInternal(), size.x, Math.min(size.y, GLDrawParams.TileSize));
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER,bindFB[0]);
+        glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, bindRB[0]);
+        final int capacity = mOutWidth * mOutHeight * mglFormat.mFormat.mSize * mglFormat.mChannels;
+        if(alloc == GLDrawParams.Allocate.None) return;
+        if(alloc == GLDrawParams.Allocate.Direct) mOutBuffer = Allocator.allocate(capacity);
+        else {
             mOutBuffer = ByteBuffer.allocateDirect(capacity);
         }
     }
