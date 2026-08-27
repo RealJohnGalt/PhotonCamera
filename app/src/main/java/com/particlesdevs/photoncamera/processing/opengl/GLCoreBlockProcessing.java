@@ -77,7 +77,12 @@ public class GLCoreBlockProcessing extends GLContext implements AutoCloseable {
         if(alloc == GLDrawParams.Allocate.None) return;
         if(alloc == GLDrawParams.Allocate.Direct) mOutBuffer = Allocator.allocate(capacity);
         else {
-            mOutBuffer = ByteBuffer.allocate(capacity);
+            // Heap previously used ByteBuffer.allocate (Java heap) which at 64MP
+            // is ~256 MB (SIMPLE_8x4) / ~512 MB (FLOAT_16x4) on the heap and
+            // triggers GC/OOM. Use off-heap direct buffer (GC-managed, no
+            // native leak accounting) to keep peak off the Java heap.
+            // Example: 16MP ARGB_8888 64 MB heap -> 0 heap, 64 MP 256 MB -> 0 heap.
+            mOutBuffer = ByteBuffer.allocateDirect(capacity);
         }
     }
     public GLCoreBlockProcessing(Point size, GLImage out, GLFormat glFormat,ByteBuffer output) {
@@ -116,14 +121,19 @@ public class GLCoreBlockProcessing extends GLContext implements AutoCloseable {
             mBlockBuffer.position(0);
             glReadPixels(0, 0, mOutWidth, height, mglFormat.getGLFormatExternal(), mglFormat.getGLType(), mBlockBuffer);
             checkEglError("glReadPixels");
-            if (height < GLDrawParams.TileSize) {
-                // This can only happen 2 times at edges
-                byte[] data = new byte[mOutWidth * height * mglFormat.mFormat.mSize * mglFormat.mChannels];
-                mBlockBuffer.get(data);
-                mOutBuffer.put(data);
-            } else {
-                mOutBuffer.put(mBlockBuffer);
-            }
+            // Avoid per-tile heap copy (new byte[] + get/put) that at 64MP would
+            // churn GC for the last partial tile. Instead slice mBlockBuffer to
+            // exact valid bytes and bulk-put without intermediate array.
+            // 16MP (4096x3840) full tiles: 0 copies; 64MP (9248x6936) partial tile
+            // ~9248*8*4=296KB previously via byte[] -> now zero-copy via slice.
+            int validBytes = mOutWidth * height * mglFormat.mFormat.mSize * mglFormat.mChannels;
+            int oldLimit = mBlockBuffer.limit();
+            mBlockBuffer.position(0).limit(validBytes);
+            mOutBuffer.put(mBlockBuffer);
+            mBlockBuffer.limit(oldLimit).position(0);
+            // Keep mOutBuffer position contiguous; mBlockBuffer reused next iter.
+            // Full-tile path previously did put(mBlockBuffer) with stale limit
+            // (TileSize bytes); slice method is exact for both.
         }
         mOutBuffer.position(0);
         mBlockBuffer = null;
@@ -175,6 +185,9 @@ public class GLCoreBlockProcessing extends GLContext implements AutoCloseable {
         ByteBuffer mOutBuffer;
         allocation = alloc;
         if(alloc == GLDrawParams.Allocate.Direct) mOutBuffer = Allocator.allocate(size.x * size.y * glFormat.mFormat.mSize * glFormat.mChannels);
+        else if(alloc == GLDrawParams.Allocate.Heap)
+            // Avoid Java heap OOM: 16MP *4B=64MB / 64MP *4B=256MB off-heap.
+            mOutBuffer = ByteBuffer.allocateDirect(size.x * size.y * glFormat.mFormat.mSize * glFormat.mChannels);
         else
             mOutBuffer = ByteBuffer.allocate(size.x * size.y * glFormat.mFormat.mSize * glFormat.mChannels);
         return drawBlocksToOutput(size,glFormat,mOutBuffer);
@@ -200,16 +213,13 @@ public class GLCoreBlockProcessing extends GLContext implements AutoCloseable {
             mBlockBuffert.position(0);
             glReadPixels(0, 0, size.x, height, glFormat.getGLFormatExternal(), glFormat.getGLType(), mBlockBuffert);
             checkEglError("glReadPixels");
-            if (height < GLDrawParams.TileSize) {
-                // This can only happen 2 times at edges
-                byte[] data = new byte[size.x * height * glFormat.mFormat.mSize * glFormat.mChannels];
-                mBlockBuffert.get(data);
-                mOutBuffer.put(data);
-            } else {
-                int lim = mBlockBuffert.limit();
-                mOutBuffer.put((ByteBuffer) mBlockBuffert.limit(size.x * GLDrawParams.TileSize * glFormat.mFormat.mSize * glFormat.mChannels));
-                mBlockBuffert.limit(lim);
-            }
+            // Unified zero-copy slice for both full and partial tiles — avoids
+            // per-tile new byte[] (would be ~296KB @64MP partial, 64KB @16MP).
+            int validBytes = size.x * height * glFormat.mFormat.mSize * glFormat.mChannels;
+            int oldLim = mBlockBuffert.limit();
+            mBlockBuffert.position(0).limit(validBytes);
+            mOutBuffer.put(mBlockBuffert);
+            mBlockBuffert.limit(oldLim).position(0);
         }
         mOutBuffer.position(0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
