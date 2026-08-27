@@ -20,7 +20,7 @@ public class ShadowTexturing extends Node {
     @Override
     public void Run() {
         BitmapDrawable dr = (BitmapDrawable) PhotonCamera.getDrawableStatic(R.drawable.shadowtex);
-        ByteBuffer buff = ByteBuffer.allocate(dr.getBitmap().getByteCount());
+        ByteBuffer buff = ByteBuffer.allocateDirect(dr.getBitmap().getByteCount());
         dr.getBitmap().copyPixelsToBuffer(buff);
         GLInterface glint = basePipeline.glint;
         Node Previous = super.previousNode;

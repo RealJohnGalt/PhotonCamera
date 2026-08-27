@@ -245,7 +245,9 @@ public class GLTexture implements AutoCloseable {
     }
     public ByteBuffer textureBuffer(GLFormat outputFormat) {
         int bytesPerCh = outputFormat.mFormat == GLFormat.DataType.FLOAT_16 ? 4 : outputFormat.mFormat.mSize;
-        ByteBuffer buffer = ByteBuffer.allocate(mSize.x * mSize.y * bytesPerCh * outputFormat.mChannels);
+        // Off-heap: at full resolution (e.g. optical-flow readback, toBitmap) a
+        // heap ByteBuffer would churn the managed heap and risk GC/OOM.
+        ByteBuffer buffer = ByteBuffer.allocateDirect(mSize.x * mSize.y * bytesPerCh * outputFormat.mChannels);
         glReadPixels(0, 0, mSize.x, mSize.y, outputFormat.getGLFormatExternal(), outputFormat.getGLType(), buffer);
         return buffer;
     }
