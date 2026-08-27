@@ -166,11 +166,16 @@ static void applyBayerBinning(const uint16_t* input, uint16_t* output,
 
 // Converts RAW10 to uint16, then applies Bayer-aware 2x2 sum binning.
 // Output size: (width/2) * (height/2) * sizeof(uint16_t)
+// Previously decoded the entire RAW10 frame into a full-size uint16 buffer
+// (width*height*2 bytes: ~32 MB @16MP, ~128 MB @64MP) before binning. Now
+// decodes two rows at a time into small line buffers and bins on the fly,
+// keeping peak native memory at ~width*2*2 (+ output) instead of
+// width*height*2 + output.
 extern "C"
 JNIEXPORT jobject JNICALL
 Java_com_particlesdevs_photoncamera_util_Allocator_allocateAndCopyConvertBinning(JNIEnv *env, jclass clazz,
-                                                                                  jint capacity, jobject originBuffer,
-                                                                                  jint width, jint row_stride, jint offset) {
+                                                                                   jint capacity, jobject originBuffer,
+                                                                                   jint width, jint row_stride, jint offset) {
     int height = capacity / row_stride;
     int out_width  = width  / 2;
     int out_height = height / 2;
@@ -191,21 +196,44 @@ Java_com_particlesdevs_photoncamera_util_Allocator_allocateAndCopyConvertBinning
         return nullptr;
     }
 
-    // Decode entire RAW10 image into a packed uint16 buffer (no row padding)
-    int full_size = width * height * (int)sizeof(uint16_t);
-    auto* decoded = static_cast<uint16_t*>(malloc(full_size));
-    if (decoded == nullptr) {
-        LOGD("allocateAndCopyConvertBinning: failed to allocate decode buffer");
+    uint8_t* input = static_cast<uint8_t*>(ptr) + offset;
+
+    // Two line buffers instead of full-frame decoded buffer.
+    // 16MP (4000 wide): 2*4000*2=16 KB vs 32 MB; 64MP (9248 wide): ~36 KB vs 128 MB.
+    auto* rowA = static_cast<uint16_t*>(malloc(width * sizeof(uint16_t)));
+    auto* rowB = static_cast<uint16_t*>(malloc(width * sizeof(uint16_t)));
+    if (rowA == nullptr || rowB == nullptr) {
+        LOGD("allocateAndCopyConvertBinning: failed to allocate row buffers");
+        free(rowA);
+        free(rowB);
         free(allocation);
         return nullptr;
     }
-    uint8_t* input = static_cast<uint8_t*>(ptr) + offset;
-    for (int row = 0; row < height; row++) {
-        decodeRaw10Row(input + row * row_stride, decoded + row * width, width);
+
+    for (int oy = 0; oy < out_height; oy++) {
+        int blockStartRow = (oy / 2) * 4;
+        int dr    = oy % 2;
+        int inRow  = blockStartRow + dr;
+        int inRow2 = (inRow + 2 < height) ? inRow + 2 : height - 1;
+
+        decodeRaw10Row(input + inRow  * row_stride, rowA, width);
+        decodeRaw10Row(input + inRow2 * row_stride, rowB, width);
+
+        uint16_t* outRow = allocation + oy * out_width;
+        for (int ox = 0; ox < out_width; ox++) {
+            int blockStartCol = (ox / 2) * 4;
+            int dc    = ox % 2;
+            int inCol  = blockStartCol + dc;
+            int inCol2 = (inCol + 2 < width) ? inCol + 2 : width - 1;
+
+            uint32_t sum = (uint32_t)rowA[inCol] + (uint32_t)rowA[inCol2]
+                         + (uint32_t)rowB[inCol] + (uint32_t)rowB[inCol2];
+            outRow[ox] = (uint16_t)(sum > 65535u ? 65535u : sum);
+        }
     }
 
-    applyBayerBinning(decoded, allocation, width, height, out_width, out_height);
-    free(decoded);
+    free(rowA);
+    free(rowB);
 
     memoryCount += output_size;
     LOGD("allocateAndCopyConvertBinning: %dx%d -> %dx%d, memory %ld MB",
@@ -245,20 +273,40 @@ Java_com_particlesdevs_photoncamera_util_Allocator_allocateAndCopyBinning(JNIEnv
         applyBayerBinning(static_cast<const uint16_t*>(ptr), allocation,
                           width, height, out_width, out_height);
     } else {
-        // De-stride into a packed buffer first
-        int full_size = width * height * (int)sizeof(uint16_t);
-        auto* packed = static_cast<uint16_t*>(malloc(full_size));
-        if (packed == nullptr) {
-            LOGD("allocateAndCopyBinning: failed to allocate pack buffer");
+        // Strided input: previously de-strided the entire frame into a packed
+        // buffer (width*height*2: ~32 MB @16MP, ~128 MB @64MP). Now copy only
+        // the two rows needed per output row into small line buffers.
+        // Peak drops from +32/128 MB to ~2*width*2 (16 KB @16MP, 36 KB @64MP).
+        const uint8_t* src = static_cast<const uint8_t*>(ptr);
+        auto* rowA = static_cast<uint16_t*>(malloc(width * sizeof(uint16_t)));
+        auto* rowB = static_cast<uint16_t*>(malloc(width * sizeof(uint16_t)));
+        if (rowA == nullptr || rowB == nullptr) {
+            LOGD("allocateAndCopyBinning: failed to allocate row buffers");
+            free(rowA);
+            free(rowB);
             free(allocation);
             return nullptr;
         }
-        const uint8_t* src = static_cast<const uint8_t*>(ptr);
-        for (int row = 0; row < height; row++) {
-            memcpy(packed + row * width, src + row * row_stride, width * sizeof(uint16_t));
+        for (int oy = 0; oy < out_height; oy++) {
+            int blockStartRow = (oy / 2) * 4;
+            int dr    = oy % 2;
+            int inRow  = blockStartRow + dr;
+            int inRow2 = (inRow + 2 < height) ? inRow + 2 : height - 1;
+            memcpy(rowA, src + inRow  * row_stride, width * sizeof(uint16_t));
+            memcpy(rowB, src + inRow2 * row_stride, width * sizeof(uint16_t));
+            uint16_t* outRow = allocation + oy * out_width;
+            for (int ox = 0; ox < out_width; ox++) {
+                int blockStartCol = (ox / 2) * 4;
+                int dc    = ox % 2;
+                int inCol  = blockStartCol + dc;
+                int inCol2 = (inCol + 2 < width) ? inCol + 2 : width - 1;
+                uint32_t sum = (uint32_t)rowA[inCol] + (uint32_t)rowA[inCol2]
+                             + (uint32_t)rowB[inCol] + (uint32_t)rowB[inCol2];
+                outRow[ox] = (uint16_t)(sum > 65535u ? 65535u : sum);
+            }
         }
-        applyBayerBinning(packed, allocation, width, height, out_width, out_height);
-        free(packed);
+        free(rowA);
+        free(rowB);
     }
 
     memoryCount += output_size;
