@@ -1089,15 +1089,11 @@ public class ESD4D extends GLOneScript {
      */
     public KernelNetResult runKernelNetInference(float sigma) {
         if (brightMapCPU == null || brightMapCPUSize == null) return null;
-        Context ctx = PhotonCamera.getAppContext();
-        if (ctx == null) return null;
-        KernelNetNcnnProcessor processor = new KernelNetNcnnProcessor(ctx);
-        try {
-            if (!processor.isReady()) return null;
-            return processor.runInference(brightMapCPU, brightMapCPUSize.x, brightMapCPUSize.y, sigma);
-        } finally {
-            processor.close();
-        }
+        // Use the process-wide singleton so the ncnn model is loaded + (Vulkan)
+        // pipeline-compiled once per process instead of on every capture.
+        KernelNetNcnnProcessor processor = KernelNetNcnnProcessor.getInstance();
+        if (processor == null) return null;
+        return processor.runInference(brightMapCPU, brightMapCPUSize.x, brightMapCPUSize.y, sigma);
     }
 
     /** Waits for the background KernelNet inference and materialises its
