@@ -70,6 +70,9 @@ public class FlowNetAlignment implements AutoCloseable {
     private boolean ready = false;
     private boolean initDone = false;
     private boolean zeroUploaded = false;
+    // Reused per-frame scratch for packing the flow into an rgba16f layout, so
+    // we don't allocate ~3.1 MB on the GL thread for every aligned frame.
+    private float[] rgbaScratch;
 
     public FlowNetAlignment(Point size, ArrayList<ImageFrame> images, GLProg glProg,
                             GLUtils glUtils, GLOneScript origin, int minExpIdx) {
@@ -164,7 +167,10 @@ public class FlowNetAlignment implements AutoCloseable {
         // Re-layout the channel-last flow into interleaved rgba16f data with the
         // full-frame stretch baked in (model-pixel flow -= rawHalf pixels).
         int plane = FLOW_W * FLOW_H;
-        float[] rgba = new float[plane * 4];
+        if (rgbaScratch == null || rgbaScratch.length != plane * 4) {
+            rgbaScratch = new float[plane * 4];
+        }
+        float[] rgba = rgbaScratch;
         FloatBuffer flow = res.asFloatBuffer();
         for (int i = 0; i < plane; i++) {
             int o = i * 4;

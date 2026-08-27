@@ -41,6 +41,9 @@ public final class FlowNetNcnnProcessor {
     private final CountDownLatch initLatch = new CountDownLatch(1);
     private volatile long nativeHandle;
     private volatile boolean ready = false;
+    // Reused across inferences (fixed 512x384 shape) so we don't allocate a
+    // ~1.5 MB direct buffer on every aligned frame in the burst.
+    private ByteBuffer cachedOutBuf;
 
     static { System.loadLibrary("ncnnMl"); }
 
@@ -141,8 +144,11 @@ public final class FlowNetNcnnProcessor {
         if (nativeHandle == 0 || baseRgba == null || alterRgba == null
                 || width <= 0 || height <= 0) return null;
         long start = System.nanoTime();
-        ByteBuffer outBuf = ByteBuffer.allocateDirect(width * height * 2 * 4)
-                .order(ByteOrder.nativeOrder());
+        int need = width * height * 2 * 4;
+        ByteBuffer outBuf = (cachedOutBuf != null && cachedOutBuf.capacity() == need)
+                ? cachedOutBuf : ByteBuffer.allocateDirect(need).order(ByteOrder.nativeOrder());
+        cachedOutBuf = outBuf;
+        outBuf.rewind();
         baseRgba.rewind();
         alterRgba.rewind();
         boolean ok;
