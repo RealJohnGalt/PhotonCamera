@@ -236,6 +236,12 @@ public class PostPipeline extends GLBasePipeline {
     /** Called from Initial.Run (first pass) to keep the linear scene buffer. */
     public void captureDemosaicLinear(GLTexture tex) {
         if (mCaptured || demosaicLinear != null || demosaicLinearTex != null) return;
+        // Only retain the linear buffer when an Ultra HDR gainmap will be
+        // built — otherwise the ~515 MB @64 MP (W*H*8) GPU copy is never
+        // consumed and just bloats peak until close().
+        try {
+            if (!PhotonCamera.getSettings().ultraHdr) return;
+        } catch (Exception ignored) {}
         // --- P2:7 GPU retention: keep the linear buffer on GPU via a copy
         // that survives closeAll, instead of readback -> CPU -> re-upload.
         // 16MP *8 B/p = ~128 MB GPU; 64MP = ~515 MB GPU but no CPU staging,
