@@ -101,17 +101,14 @@ public class ESD4D extends GLOneScript {
         GLTexture avgA     = new GLTexture(packedSize, new GLFormat(GLFormat.DataType.FLOAT_16, 4), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
         GLTexture avgB     = new GLTexture(packedSize, new GLFormat(GLFormat.DataType.FLOAT_16, 4), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
         GLTexture tempFloat = new GLTexture(packedSize, new GLFormat(GLFormat.DataType.FLOAT_16, 4), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
-        GLTexture tempRaw  = maxFrames > 1
-                ? new GLTexture(parameters.rawSize, new GLFormat(GLFormat.DataType.UNSIGNED_16, 1), null, GL_NEAREST, GL_CLAMP_TO_EDGE)
-                : null;
 
         GLTexture avgCurrent = avgA;
         GLTexture avgNext    = avgB;
 
         for (int i = 0; i < maxFrames; i++) {
-            GLTexture rawSrc = (i == 0) ? inputBase : tempRaw;
+            GLTexture rawSrc = (i == 0) ? inputBase : inputAlter;
             if (i > 0) {
-                tempRaw.loadData(images.get(i).buffer);
+                inputAlter.loadData(images.get(i).buffer);
             }
 
             // Convert raw Bayer -> normalized rgba16f vec4 (one texel per 2x2 Bayer quad)
@@ -146,7 +143,6 @@ public class ESD4D extends GLOneScript {
 
         avgNext.close();
         tempFloat.close();
-        if (tempRaw != null) tempRaw.close();
         Log.d(Name, "Averaged " + maxFrames + " frame(s) for hot pixel detection");
         return avgCurrent; // caller must close
     }
@@ -518,6 +514,9 @@ public class ESD4D extends GLOneScript {
         cfaShift = (cfa == 1 || cfa == 2) ? new Point(cfa % 2, cfa / 2) : new Point(0, 0);
         packedSize = new Point(rawHalf.x + cfaShift.x, rawHalf.y + cfaShift.y);
         inputBase = new GLTexture(parameters.rawSize, new GLFormat(GLFormat.DataType.UNSIGNED_16,1),images.get(0).buffer, GL_NEAREST, GL_CLAMP_TO_EDGE);
+        // Reused by buildAveragedFrame and the merge loop — one full RAW16
+        // texture (~128 MB @64 MP) saved per capture.
+        inputAlter = new GLTexture(parameters.rawSize, new GLFormat(GLFormat.DataType.UNSIGNED_16, 1), null, GL_NEAREST, GL_MIRRORED_REPEAT);
         // Pyramid diff
         baseDiff = new GLTexture(packedSize,new GLFormat(GLFormat.DataType.FLOAT_16,4),null,GL_LINEAR,GL_CLAMP_TO_EDGE);
         // Temporal result
@@ -886,7 +885,7 @@ public class ESD4D extends GLOneScript {
 
         //Point aSize = new Point(parameters.rawSize.x/(2*parameters.tile) + 1, parameters.rawSize.y/(2*parameters.tile) + 1);
         Point border = new Point(16,16);
-        inputAlter = new GLTexture(parameters.rawSize, new GLFormat(GLFormat.DataType.UNSIGNED_16, 1), null, GL_NEAREST, GL_MIRRORED_REPEAT);
+        // inputAlter already created at init (reused by buildAveragedFrame)
         //alignmentTex = new GLTexture(aSize, new GLFormat(GLFormat.DataType.FLOAT_32, 2), alignment, GL_NEAREST, GL_MIRRORED_REPEAT);
 
         //counter.put(1.0f,1.0f);
