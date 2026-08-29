@@ -190,7 +190,11 @@ public class PostPipeline extends GLBasePipeline {
         exposureCurve = null;
         Point rawSliced = parameters.rawSize;
         cropSize = new Point(parameters.rawSize);
-        if (PhotonCamera.getSettings().aspect169) {
+        // If the buffer was already cropped by digital zoom, the 16:9 re-crop
+        // must be skipped — the crop region is already the final output size.
+        boolean zoomed = PhotonCamera.getCaptureController() != null
+                && PhotonCamera.getCaptureController().zoomController.isZoomed();
+        if (PhotonCamera.getSettings().aspect169 && !zoomed) {
             if (rawSliced.x > rawSliced.y) {
                 rawSliced = new Point(rawSliced.x, rawSliced.x * 9 / 16);
             } else {
@@ -381,7 +385,9 @@ public class PostPipeline extends GLBasePipeline {
         captureDemosaic = false;
         Point rawSliced = parameters.rawSize;
         cropSize = new Point(parameters.rawSize);
-        if (PhotonCamera.getSettings().aspect169) {
+        boolean zoomed = PhotonCamera.getCaptureController() != null
+                && PhotonCamera.getCaptureController().zoomController.isZoomed();
+        if (PhotonCamera.getSettings().aspect169 && !zoomed) {
             if (rawSliced.x > rawSliced.y) {
                 rawSliced = new Point(rawSliced.x, rawSliced.x * 9 / 16);
             } else {
