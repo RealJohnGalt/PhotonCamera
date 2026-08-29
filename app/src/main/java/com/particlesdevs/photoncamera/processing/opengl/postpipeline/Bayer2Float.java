@@ -53,7 +53,11 @@ public class Bayer2Float extends Node {
         GLTexture GainMapTex = new GLTexture(basePipeline.mParameters.mapSize, new GLFormat(GLFormat.DataType.FLOAT_16, 4),
                 BufferUtils.getFrom(basePipeline.mParameters.gainMap), GL_LINEAR, GL_CLAMP_TO_EDGE);
 
-        if (PhotonCamera.getSettings().aspect169) {
+        // When the buffer is already pre-cropped by digital zoom, no extra
+        // 16:9 offset should be applied (the crop region is already final).
+        boolean zoomed = PhotonCamera.getCaptureController() != null
+                && PhotonCamera.getCaptureController().zoomController.isZoomed();
+        if (PhotonCamera.getSettings().aspect169 && !zoomed) {
             if (rawSize.x > rawSize.y) {
                 glProg.setDefine("OFFSET", 0, 2 * (((rawSize.y - rawSize.x * 9 / 16) / 2) / 2));
             } else {
@@ -69,6 +73,11 @@ public class Bayer2Float extends Node {
         glProg.setDefine("RGBLAYOUT",basePipeline.mSettings.alignAlgorithm == 2);
         glProg.setDefine("TESTPATTERN",testPattern);
         glProg.setDefine("TP", testPatternIndex);
+        if (basePipeline.mParameters.isCropped
+                && basePipeline.mParameters.cropOrigin != null
+                && basePipeline.mParameters.fullRawSize != null) {
+            glProg.setDefine("HAS_GAIN_OFFSET", 1);
+        }
         glProg.useAssetProgram("Bayer2Float/tofloat");
         glProg.setTexture("InputBuffer", in);
         glProg.setVar("CfaPattern", basePipeline.mParameters.cfaPattern);
@@ -79,6 +88,21 @@ public class Bayer2Float extends Node {
         Log.d(Name, "whitelevel:" + basePipeline.mParameters.whiteLevel);
         glProg.setVarU("whitelevel", (int) basePipeline.mParameters.whiteLevel);
         glProg.setTexture("GainMap", GainMapTex);
+        // The lens-shading map covers the full frame; when the buffer is cropped,
+        // sample the gain map at (cropOrigin + xy) / fullSize instead of over the
+        // whole map, so vignette correction stays aligned to the crop region.
+        if (basePipeline.mParameters.isCropped
+                && basePipeline.mParameters.cropOrigin != null
+                && basePipeline.mParameters.fullRawSize != null) {
+            glProg.setVar("GainOffset",
+                    basePipeline.mParameters.cropOrigin.x
+                            / (float) basePipeline.mParameters.fullRawSize.x,
+                    basePipeline.mParameters.cropOrigin.y
+                            / (float) basePipeline.mParameters.fullRawSize.y);
+            glProg.setVar("GainFullInvSize",
+                    1.0f / basePipeline.mParameters.fullRawSize.x,
+                    1.0f / basePipeline.mParameters.fullRawSize.y);
+        }
         if(testPattern && testPatternIndex == 0) {
             try {
                 kodbm = new GLImage(PhotonCamera.getAssetLoader().getInputStream("kodim19.png"));
