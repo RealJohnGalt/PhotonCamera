@@ -21,10 +21,13 @@ import android.graphics.Point;
 public final class GainMapComputer {
 
     /**
-     * Total log2 range covered by the encoding (6 stops = 64x boost). Must
-     * equal uScale passed to ultrahdr/gainmap.glsl.
+     * Total log2 range covered by the encoding. This is an encode-side ceiling
+     * only: {@link #compute} re-derives the final {@code GainMapMax} from the
+     * data, so the stored metadata is unaffected. Must equal {@code uScale}
+     * passed to ultrahdr/gainmap.glsl. Kept well above 6 so the highlight boost
+     * of a multi-frame HDR scene never top-clips in the shader.
      */
-    public static final float SCALE = 6.0f;
+    public static final float SCALE = 10.0f;
     /**
      * OffsetSDR/OffsetHDR of the hdrgm XMP metadata (1/64). The comparison
      * shader adds it to both luminance sides before taking the ratio so the

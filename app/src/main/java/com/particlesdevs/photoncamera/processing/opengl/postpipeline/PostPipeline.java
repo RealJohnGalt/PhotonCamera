@@ -581,8 +581,18 @@ public class PostPipeline extends GLBasePipeline {
             } finally {
                 hist.close();
             }
-            float anchor = sMedLin / lMed;
-            Log.d("PostPipeline", "UltraHDR anchor:" + anchor + " Lmed:" + lMed + " SmedLin:" + sMedLin);
+            // Global scene-to-render anchor. Guard against a degenerate median
+            // (near-black scene, or the SDR pulling ahead of the linear) that
+            // would otherwise yield a non-finite / enormous boost and flood
+            // the map; otherwise leave the exposure relationship untouched so
+            // exactly zero stays at the midtone and shadows are never darkened.
+            float rawAnchor = sMedLin / Math.max(lMed, 1e-4f);
+            float anchor = rawAnchor;
+            if (!Float.isFinite(anchor) || anchor <= 0f) anchor = 1.0f;
+            anchor = Math.max(1e-3f, Math.min(anchor, 1e3f));
+            Log.d("PostPipeline", "UltraHDR anchor:" + anchor
+                    + " Lmed:" + lMed + " SmedLin:" + sMedLin
+                    + " rawAnchor:" + rawAnchor);
 
             // Gain-map output is scalar. Store only its red channel as R8;
             // gainmap.glsl writes the same encoded value to RGB, so retaining
@@ -627,13 +637,20 @@ public class PostPipeline extends GLBasePipeline {
                 gm.rewind();
 
                 int[] row = new int[gw];
+                int floorCount = 0;
+                int satCount = 0;
                 for (int y = 0; y < gh; y++) {
                     for (int x = 0; x < gw; x++) {
                         int v = gm.get() & 0xFF;
+                        if (v == 0) floorCount++;
+                        if (v == 255) satCount++;
                         row[x] = 0xFF000000 | (v << 16) | (v << 8) | v;
                     }
                     gmBmp.setPixels(row, 0, gw, 0, y, gw, 1);
                 }
+                int total = gw * gh;
+                Log.d("PostPipeline", "UltraHDR map frac floored:" + (total > 0 ? floorCount / (float) total : 0)
+                        + " saturated:" + (total > 0 ? satCount / (float) total : 0));
             } finally {
                 Allocator.free(gm);
             }

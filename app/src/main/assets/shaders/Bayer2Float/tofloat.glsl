@@ -100,7 +100,13 @@ void main() {
                 Output = gains.b*(Output-level.b-BLB)/(1.0-level.b);
             }
         }
-    Output = clamp(Output/balance,0.0,1.0);
+    // Scene-referred: keep values > 1 so the Ultra HDR gain-map pass can
+    // measure recoverable highlight headroom (see ultrahdr/sceneluma.glsl:
+    // "scene luminance may legitimately reach/exceed 1.0"). Downstream
+    // tone-map/display stages clamp for output; only the negative guard is
+    // kept here. (Amaze does not clamp, ABLC previously did — see
+    // ABLC/levelcorrection.glsl.)
+    Output = max(Output/balance,0.0);
     #endif
     #if TESTPATTERN == 1
         ivec2 diag = ivec2(xy.x+xy.y,xy.x-xy.y);
