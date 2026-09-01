@@ -178,7 +178,11 @@ public class PostPipeline extends GLBasePipeline {
         linearDisplayGain = 1.0f;
         sceneWhiteRaw = 0f;
         exposureCurve = null;
-        Point rotatedSize = getRotatedCoords(rawSliced);
+        Point targetSliced = new Point(rawSliced.x, rawSliced.y);
+        if (parameters.fullRawSize != null && parameters.isCropped) {
+            targetSliced = new Point(parameters.fullRawSize.x & ~3, parameters.fullRawSize.y & ~3);
+        }
+        Point rotatedSize = getRotatedCoords(targetSliced);
         if (PhotonCamera.getSettings().energySaving || mParameters.rawSize.x * mParameters.rawSize.y < ResolutionSolution.smallRes) {
             GLDrawParams.TileSize = 8;
         } else {
@@ -300,7 +304,11 @@ public class PostPipeline extends GLBasePipeline {
         workSize = new Point(cropSize.x, cropSize.y);
         computeNoise(parameters);
         captureDemosaic = false;
-        Point rotatedSize = getRotatedCoords(rawSliced);
+        Point targetSliced = new Point(rawSliced.x, rawSliced.y);
+        if (parameters.fullRawSize != null && parameters.isCropped) {
+            targetSliced = new Point(parameters.fullRawSize.x & ~3, parameters.fullRawSize.y & ~3);
+        }
+        Point rotatedSize = getRotatedCoords(targetSliced);
         // The gain map must be pixel-aligned with the stored SDR base; any
         // size/orientation mismatch displaces the boost field from the scene.
         // Fail loudly -> caller falls back to a plain SDR JPEG.
@@ -342,6 +350,15 @@ public class PostPipeline extends GLBasePipeline {
             }
             // The snapshot is only needed until it is resident on the GPU.
             releaseDemosaicLinear();
+            if (parameters.fullRawSize != null && parameters.isCropped) {
+                Point linTarget = new Point(parameters.fullRawSize.x & ~3, parameters.fullRawSize.y & ~3);
+                if (!linTarget.equals(demosaicLinearSize)) {
+                    GLTexture linFull = glint.glUtils.interpolate(linTex, linTarget);
+                    linTex.close();
+                    linTex = linFull;
+                    demosaicLinearSize = linTarget;
+                }
+            }
 
             // Off-heap staging for the base image upload: GLImage(Bitmap)
             // would allocate a Java-accounted direct copy of the whole bitmap
@@ -661,6 +678,7 @@ public class PostPipeline extends GLBasePipeline {
         add(new CaptureSharpening());
         add(new CorrectingFlow());
         add(new Sharpen2());
+        add(new UpscaleFsrcnn());
         add(new RotateWatermark(getRotation()));
     }
 }
