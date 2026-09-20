@@ -384,6 +384,7 @@ public class CameraFragment extends Fragment {
                         }
                         if (propertyId == BR._all || propertyId == BR.settingsBarVisibility) {
                             lensZoomBarController.setSettingsHidden(model.isSettingsBarVisibility());
+                            applyManualDomeHeight();
                             updateBackIntercept();
                         }
                     }
@@ -429,6 +430,16 @@ public class CameraFragment extends Fragment {
             // back scale pivoted on the visible bubble.
             manualPanelBar.post(() -> Binding.pinOptionBarPivot(manualPanelBar));
         }
+        // The dome tracks the preview area so the disc reads as ~1/3 of the
+        // viewfinder on every device and mode (the dummy view's height is the
+        // visible preview above the bottom bar).
+        cameraFragmentBinding.dummyReferenceView.addOnLayoutChangeListener(
+                (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
+                        applyManualDomeHeight());
+        cameraFragmentBinding.settingsBar.addOnLayoutChangeListener(
+                (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
+                        applyManualDomeHeight());
+        view.post(this::applyManualDomeHeight);
         textureView.postOnAnimation(panelBlurTracker);
         view.getViewTreeObserver().addOnPreDrawListener(lensOffsetCorrection);
         initSettingsBar();
@@ -569,6 +580,8 @@ public class CameraFragment extends Fragment {
     private View manualPanelBar;
     private View manualKnobContainer;
     private KnobView manualKnobView;
+    /** Applied manual wheel dome height in px, -1 until the first layout. */
+    private float manualDomeHeightPx = -1f;
     /** Current translation applied to the lens cluster to offset layout jumps. */
     private float lensClusterOffset = Float.NaN;
 
@@ -688,6 +701,50 @@ public class CameraFragment extends Fragment {
 
     private static float clampAlpha(float alpha) {
         return Math.min(1f, Math.max(0f, alpha));
+    }
+
+    /**
+     * Sizes the manual palette's wheel dome to ~1/3 of the preview area, so
+     * the disc is proportionally the same on every device and mode. The
+     * palette's reserved dome zone, the wheel's container and the bubble
+     * background all take the same height; the blur region and the
+     * lens-cluster lift read them back.
+     */
+    private void applyManualDomeHeight() {
+        if (manualPanelBar == null || manualKnobContainer == null) {
+            return;
+        }
+        int previewHeight = cameraFragmentBinding.dummyReferenceView.getHeight();
+        if (previewHeight <= 0) {
+            return;
+        }
+        // The quick settings bar overlays the preview from the bottom; while it
+        // is open the disc must fit the viewfinder that stays visible above it,
+        // otherwise it reads ~1/4 taller than a third of what is on screen.
+        if (cameraFragmentBinding.getUimodel() != null
+                && cameraFragmentBinding.getUimodel().isSettingsBarVisibility()) {
+            int visibleTop = cameraFragmentBinding.settingsBar.getTop();
+            if (visibleTop > 0 && visibleTop < previewHeight) {
+                previewHeight = visibleTop;
+            }
+        }
+        float domePx = Math.max(previewHeight / 5.75f,
+                getResources().getDimension(R.dimen.manual_dome_min_height));
+        if (Math.abs(domePx - manualDomeHeightPx) < 1f) {
+            return;
+        }
+        manualDomeHeightPx = domePx;
+        ViewGroup.LayoutParams params = manualKnobContainer.getLayoutParams();
+        if (params != null) {
+            params.height = (int) domePx;
+            manualKnobContainer.setLayoutParams(params);
+        }
+        manualPanelBar.setPadding(manualPanelBar.getPaddingLeft(), (int) domePx,
+                manualPanelBar.getPaddingRight(), manualPanelBar.getPaddingBottom());
+        if (manualPanelBar.getBackground() instanceof ManualPaletteBackground) {
+            ((ManualPaletteBackground) manualPanelBar.getBackground()).setDomeHeightPx(domePx);
+        }
+        manualPanelBar.post(() -> Binding.pinOptionBarPivot(manualPanelBar));
     }
 
     /** Adds a rounded-rect blur region for {@code view}, or nothing when hidden/empty. */
