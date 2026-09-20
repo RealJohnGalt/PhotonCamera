@@ -500,8 +500,6 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
 
     };
     private Range<Integer> FpsRangeAuto;
-    /** Last seen CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES copy, for range validation. */
-    private Range<Integer>[] mAvailableFpsRanges;
     private int[] mCameraAfModes;
     private int mPreviewWidth;
     private int mPreviewHeight;
@@ -1255,49 +1253,23 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
 //        }
 //    }
 
+    /**
+     * Frame rate requested by the user. Fixed selections are returned
+     * verbatim in every mode: vendor HALs accept rates their advertised
+     * {@code CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES} table omits (e.g. 60fps
+     * on OPlus cameras), and validating against that table silently turned
+     * the photo-mode 24/30/60 selection into auto.
+     */
     private Range<Integer> getSelectedFpsRange() {
         if (mHighSpeedRecording && mIsRecordingVideo && mHighSpeedFpsRange != null) {
             return mHighSpeedFpsRange;
         }
-        Range<Integer> wanted;
         switch (PhotonCamera.getSettings().fpsMode) {
-            case 1: wanted = new Range<>(24, 24); break;
-            case 2: wanted = new Range<>(30, 30); break;
-            case 3: wanted = new Range<>(60, 60); break;
-            default: wanted = null; break;
+            case 1: return new Range<>(24, 24);
+            case 2: return new Range<>(30, 30);
+            case 3: return new Range<>(60, 60);
+            default: return FpsRangeAuto != null ? FpsRangeAuto : new Range<>(14, 30);
         }
-        if (wanted == null) {
-            return FpsRangeAuto != null ? FpsRangeAuto : new Range<>(14, 30);
-        }
-        if (isVideoMode()) {
-            // Video mode requests the selected rate verbatim, like stock
-            // camcorders: the advertised table on logical cameras is not
-            // authoritative for vendor high-fps modes, and the range is also
-            // passed as a session parameter at configure time so the HAL
-            // selects the sensor mode before streaming starts.
-            return wanted;
-        }
-        // Photo mode: fixed singletons must exist on the HAL; otherwise fall
-        // back instead of failing session configuration.
-        try {
-            if (mAvailableFpsRanges != null) {
-                for (Range<Integer> r : mAvailableFpsRanges) {
-                    if (wanted.equals(r)) return wanted;
-                }
-                // Prefer any range with the same upper bound (same frame rate).
-                for (Range<Integer> r : mAvailableFpsRanges) {
-                    if (r != null && wanted.getUpper().equals(r.getUpper())) return r;
-                }
-                Log.w(TAG, "fps range " + wanted + " unsupported, available="
-                        + Arrays.toString(mAvailableFpsRanges) + ", falling back to auto");
-            } else {
-                Log.w(TAG, "fps range " + wanted + " unchecked (no ranges loaded), falling back to auto");
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "fps range validation failed", e);
-        }
-        Log.w(TAG, "fps range " + wanted + " unsupported, falling back to auto");
-        return FpsRangeAuto != null ? FpsRangeAuto : new Range<>(14, 30);
     }
 
     /**
@@ -3536,14 +3508,13 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
     }
 
     /**
-     * Populates the validated FPS-range table and the auto fallback from the
-     * given characteristics. Extracted so record start can refresh it when
-     * the open-time population was skipped or went stale.
+     * Derives the auto-mode fallback range from the camera's advertised FPS
+     * ranges: lowest supported lower bound up to 30fps.
      */
     private void populateFpsRanges(CameraCharacteristics characteristics) {
         try {
             if (characteristics == null) {
-                Log.w(TAG, "populateFpsRanges: no characteristics, keeping previous ranges");
+                Log.w(TAG, "populateFpsRanges: no characteristics, keeping previous range");
                 return;
             }
             Range<Integer>[] ranges = characteristics.get(
@@ -3572,22 +3543,10 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
             } catch (Exception ignored) {
             }
             FpsRangeAuto = new Range<>(minLower, maxUpper);
-            try {
-                mAvailableFpsRanges = ranges.clone();
-            } catch (Exception ignored) {
-                mAvailableFpsRanges = ranges;
-            }
-            Log.d(TAG, "fps ranges loaded: " + Arrays.toString(mAvailableFpsRanges));
+            Log.d(TAG, "fps auto range=" + FpsRangeAuto + " from " + Arrays.toString(ranges));
         } catch (Exception e) {
             Log.w(TAG, "populateFpsRanges failed", e);
         }
-    }
-
-    /** Refreshes the FPS-range table from the open device when it is missing. */
-    private void ensureFpsRanges() {
-        if (mAvailableFpsRanges != null) return;
-        Log.w(TAG, "ensureFpsRanges: table missing at record start, repopulating");
-        populateFpsRanges(getOpenDeviceCharacteristics());
     }
 
     private void setCaptureRequestBuilder() throws CameraAccessException {
@@ -4905,9 +4864,6 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
         int videoFrameRate = profile.videoFrameRate;
         mHighSpeedRecording = false;
         mHighSpeedFpsRange = null;
-        // The open-time FPS table can be missing when the open short-circuited;
-        // refresh it from the open device so the HS probe below is real.
-        ensureFpsRanges();
         try {
             // Align the container frame rate with the AE range configured on
             // the session.
