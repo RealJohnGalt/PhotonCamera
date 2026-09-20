@@ -38,7 +38,7 @@ public class ManualPaletteBackground extends Drawable {
     private final Path m_Path = new Path();
     private final RectF m_Oval = new RectF();
     private final float m_CornerRadius;
-    private final float m_DomeHeight;
+    private float m_DomeHeight;
     /**
      * Shoulder radius whose rounding footprint equals a bubble corner's at the
      * fully grown dome; solved per bounds, clamped per frame while animating.
@@ -76,6 +76,21 @@ public class ManualPaletteBackground extends Drawable {
 
     public float getDomeHeightPx() {
         return m_DomeHeight;
+    }
+
+    /**
+     * Updates the reserved dome height (the wheel zone above the bubble) when
+     * the palette scales with the viewfinder size. The shoulder solve and the
+     * silhouette path are rebuilt immediately.
+     */
+    public void setDomeHeightPx(float domeHeightPx) {
+        float clamped = Math.max(0f, domeHeightPx);
+        if (m_DomeHeight != clamped) {
+            m_DomeHeight = clamped;
+            solveDesiredShoulder();
+            rebuildPath();
+            invalidateSelf();
+        }
     }
 
     /**
