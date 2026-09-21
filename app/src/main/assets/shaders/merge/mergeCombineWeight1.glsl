@@ -61,6 +61,18 @@ struct CombineMoments {
     vec4 z2;         // squared weight sum per channel
 };
 
+// Interpolation source for the bayer residual. smoothstep() saturates to
+// exactly 1.0 once meanMain >= 0.01 and to exactly 0.0 at/below 0, and for
+// these clamped finite operands mix(a,b,1.0) == b and mix(a,b,0.0) == a hold
+// bit-for-bit. The unused fetch can therefore be skipped at the endpoints
+// without changing a single bit; only the strictly interior band needs both.
+vec4 bayerSource(ivec2 p, float bf) {
+    if (bf >= 1.0) return getBayerVec(p * 2, inTex);
+    vec4 packed = imageLoad(inTexture, p);
+    if (bf <= 0.0) return packed;
+    return mix(packed, getBayerVec(p * 2, inTex), bf);
+}
+
 // One weighted tap: loads the diff, forms the residual against the caller's
 // bayer source and folds it into the six moment accumulators. The caller owns
 // the bayer fetch (and the mirror-tap weight swap), so mirrored pairs can
@@ -150,14 +162,10 @@ void main() {
             u = fi + 0.5; v = fj - 0.5;
             float wb = exp(-(c * u * u + 2.0 * b * u * v + a * v * v));
             ivec2 offset = ivec2(i, j);
-            addTap(acc, xy + offset + flow,
-                   mix(imageLoad(inTexture, xy + offset), getBayerVec((xy + offset) * 2, inTex), blendFactor),
-                   w, wg, wb);
+            addTap(acc, xy + offset + flow, bayerSource(xy + offset, blendFactor), w, wg, wb);
             if (i != 0 || j != 0) {
                 ivec2 moffset = ivec2(-i, -j);
-                addTap(acc, xy + moffset + flow,
-                       mix(imageLoad(inTexture, xy + moffset), getBayerVec((xy + moffset) * 2, inTex), blendFactor),
-                       w, wb, wg);
+                addTap(acc, xy + moffset + flow, bayerSource(xy + moffset, blendFactor), w, wb, wg);
             }
         }
     }
