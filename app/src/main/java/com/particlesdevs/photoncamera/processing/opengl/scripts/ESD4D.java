@@ -308,6 +308,11 @@ public class ESD4D extends GLOneScript {
     private final long[] alterUploadFences = new long[2];
     GLTexture alter;
     GLTexture alignmentTex;
+    /** Halide aligner running on a worker thread (null before launch/after join). */
+    private HalideAlignment halideAlignment;
+    private Thread halideThread;
+    private final AtomicReference<Throwable> halideError = new AtomicReference<>();
+    private long halideLaunchMs;
     /** Dense optical-flow alignment (FlowNet); non-null when useNcnnFlow ran. */
     FlowNetAlignment flowNetAlignment;
     @Tunable(title = "HotPixels detect threshold", category = "Merge", description = "Higher multiplier detects less hotpixels", min = 0.5f, max = 5.0f, step = 0.1f, defaultValue = 1.5f)
@@ -515,6 +520,31 @@ public class ESD4D extends GLOneScript {
         android.opengl.GLES30.glDeleteSync(fence);
     }
 
+    /**
+     * Joins the Halide alignment worker if one is running, propagating any
+     * failure it captured. Idempotent: the reference is cleared first, so the
+     * {@link #close()} safety net after the normal join is a no-op.
+     */
+    private void joinHalideWorker() {
+        Thread t = halideThread;
+        halideThread = null;
+        if (t == null) return;
+        boolean interrupted = false;
+        while (t.isAlive()) {
+            try {
+                t.join();
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
+        Throwable err = halideError.getAndSet(null);
+        if (err != null) {
+            if (err instanceof RuntimeException) throw (RuntimeException) err;
+            throw new RuntimeException("Halide alignment failed", err);
+        }
+    }
+
     /** Records the completion point of the given slot's last reader (merge00). */
     private void markAlterUploadFence(int slot) {
         if (alterUploadFences[slot] != 0) {
@@ -623,6 +653,29 @@ public class ESD4D extends GLOneScript {
         long f16T = System.currentTimeMillis();
         convertFramesToF16();
         Log.d("ESD4D", "Stage[f16-convert] elapsed:" + (System.currentTimeMillis() - f16T) + " ms");
+
+        // The Halide aligner needs only the normalized frames and parameters,
+        // and its kernels are CPU-only, so launch it here: its ~190 ms at
+        // 12.6 MP then overlaps the GPU noise-blend / histogram / brightmap
+        // passes instead of running after them with the GPU idle. The Result
+        // texture is still created on the GL thread at the aligner branch.
+        Point alignmentOutputSize = new Point(parameters.alignmentSize.x * parameters.tilesX,
+                parameters.alignmentSize.y * ((images.size()-1)/parameters.tilesX + 1));
+        Log.d("Alignment", "alignment pipeline size: " + alignmentOutputSize.x + " " + alignmentOutputSize.y);
+        if (Objects.equals(alignerSelect, "halide")) {
+            halideAlignment = new HalideAlignment(alignmentOutputSize, images);
+            halideAlignment.parameters = parameters;
+            halideLaunchMs = System.currentTimeMillis();
+            halideThread = new Thread(() -> {
+                try {
+                    halideAlignment.RunCPU();
+                } catch (Throwable t) {
+                    halideError.compareAndSet(null, t);
+                    Log.e("ESD4D", "Halide alignment worker failed", t);
+                }
+            }, "HalideAlignment");
+            halideThread.start();
+        }
 
         float minExp = 1.f;
         int minExpIdx = 0;
@@ -993,9 +1046,10 @@ public class ESD4D extends GLOneScript {
         }, "KernelNet-inference");
         kernelNetThread.start();
 
-        // Alignment runs after the KernelNet worker is launched so the CPU
-        // ncnn inference overlaps the whole alignment pass (pyramid or FlowNet)
-        // instead of following it. Nothing between the worker start and the
+        // The KernelNet worker joins the already-running Halide worker (launched
+        // right after f16-convert) so both overlap this GPU-side block; with a
+        // GL/FlowNet/off aligner, alignment itself still runs below with the
+        // inference concurrently. Nothing between the worker start and the
         // merge loop consumes alignmentTex, and this block only needs the
         // reference-frame inputs already prepared above.
         // The merge loop uploads each alter frame into inputAlter just before
@@ -1007,9 +1061,6 @@ public class ESD4D extends GLOneScript {
         // Second ring slot: see the merge loop. Sharing with FlowNet/Pyramid
         // stays on the first slot (alignment completes before the loop).
         inputAlterAlt = new GLTexture(parameters.rawSize, new GLFormat(GLFormat.DataType.FLOAT_16, 1), null, GL_NEAREST, GL_MIRRORED_REPEAT);
-        Point alignmentOutputSize = new Point(parameters.alignmentSize.x * parameters.tilesX,
-                parameters.alignmentSize.y * ((images.size()-1)/parameters.tilesX + 1));
-        Log.d("Alignment", "alignment pipeline size: " + alignmentOutputSize.x + " " + alignmentOutputSize.y);
         // Aligner selector: 0 = GL pyramid (disables FlowNet), 1 = FlowNet,
         // 2 = Halide CPU. FlowNet keeps its init fallback to the pyramid.
         if (Objects.equals(alignerSelect, "flownet")) {
@@ -1029,18 +1080,27 @@ public class ESD4D extends GLOneScript {
             }
         }
         if (Objects.equals(alignerSelect, "halide")) {
-            // CPU/NEON Halide path; identical Result
-            // atlas format, so the merge below is unchanged.
-            HalideAlignment halideAlignment = new HalideAlignment(alignmentOutputSize, images);
-            halideAlignment.parameters = parameters;
-            long startTime = System.currentTimeMillis();
-            halideAlignment.Run();
-            Log.d("ESD4D", "Halide alignment time: " + (System.currentTimeMillis() - startTime) + "ms");
+            // CPU/NEON Halide path; identical Result atlas format, so the
+            // merge below is unchanged. The CPU half has been running on a
+            // worker since the f16-convert; collect it and upload the atlas on
+            // this (GL) thread.
+            long waitT = System.currentTimeMillis();
+            try {
+                joinHalideWorker();
+                Log.d("ESD4D", "Halide alignment wait: " + (System.currentTimeMillis() - waitT)
+                        + "ms total: " + (System.currentTimeMillis() - halideLaunchMs) + "ms");
+                halideAlignment.uploadResult();
+            } catch (RuntimeException e) {
+                halideAlignment.close();
+                halideAlignment = null;
+                throw e;
+            }
             alignmentTex = halideAlignment.Result;
             if (alignDebugCompare == 1) {
                 logAlignerCompare(alignmentOutputSize, images);
             }
             halideAlignment.close();
+            halideAlignment = null;
         } else if (Objects.equals(alignerSelect, "gl")) {
             PyramidAlignment pyramidAlignment = new PyramidAlignment(alignmentOutputSize, images, glProg, glUtils, this);
             pyramidAlignment.parameters = parameters;
@@ -1348,6 +1408,20 @@ public class ESD4D extends GLOneScript {
         kernelsMapCPUSize = new Point(w, h);
         kernelsMapBase = halves;
         return map;
+    }
+
+    @Override
+    public void close() {
+        // Safety net for error paths that skip the aligner branch: never let
+        // the CPU worker outlive the script against buffers the caller may
+        // free (or a GL context about to be torn down). No-op after the
+        // normal join in Run.
+        try {
+            joinHalideWorker();
+        } catch (Throwable t) {
+            Log.e("ESD4D", "Halide alignment worker failed during close", t);
+        }
+        super.close();
     }
 
     @Override

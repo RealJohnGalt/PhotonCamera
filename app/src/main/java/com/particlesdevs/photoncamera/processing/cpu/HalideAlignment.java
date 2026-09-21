@@ -67,6 +67,8 @@ public class HalideAlignment implements AutoCloseable {
 
     public Parameters parameters;
     public GLTexture Result;
+    /** Atlas produced by {@link #RunCPU()}; consumed by {@link #uploadResult()}. */
+    public float[] atlas;
 
     private final ArrayList<ImageFrame> images;
     private final Point size;
@@ -108,8 +110,21 @@ public class HalideAlignment implements AutoCloseable {
                 + " rem=" + b.remaining() + " direct=" + b.isDirect());
     }
 
+    /** CPU build + GL upload; equivalent to {@code RunCPU(); uploadResult();}. */
     @SuppressLint("DefaultLocale")
     public void Run() {
+        RunCPU();
+        uploadResult();
+    }
+
+    /**
+     * Builds the packed vector atlas on the CPU (Halide/NEON + the pack loop).
+     * Touches no GL state, so it may run on a worker thread while the GL
+     * thread works on unrelated passes. The result is published in
+     * {@link #atlas}.
+     */
+    @SuppressLint("DefaultLocale")
+    public void RunCPU() {
         // The baked kernels match on a 64-raw-px native grid and the pack
         // loop below broadcasts with a fixed >> 2, so everything here assumes
         // parameters.tile == 16 (mergeAlign's TILE_AL). Warn loudly rather
@@ -149,7 +164,7 @@ public class HalideAlignment implements AutoCloseable {
         Log.d(TAG, "base pyramid: " + (System.currentTimeMillis() - t0) + "ms");
 
         // Zero-initialized atlas = identity alignment for uncovered cells.
-        float[] atlas = new float[size.x * size.y * 4];
+        atlas = new float[size.x * size.y * 4];
 
         for (int f = 1; f < images.size(); f++) {
             ImageFrame frame = images.get(f);
@@ -201,6 +216,16 @@ public class HalideAlignment implements AutoCloseable {
                     + "): " + tAlign + "ms");
         }
 
+    }
+
+    /**
+     * Uploads the atlas built by {@link #RunCPU()} into {@link #Result}.
+     * GL thread only.
+     */
+    public void uploadResult() {
+        if (atlas == null) {
+            throw new IllegalStateException("HalideAlignment.uploadResult without RunCPU");
+        }
         Result = new GLTexture(size, new GLFormat(GLFormat.DataType.FLOAT_16, 4),
                 BufferUtils.getFrom(atlas), GL_NEAREST, GL_CLAMP_TO_EDGE);
     }
