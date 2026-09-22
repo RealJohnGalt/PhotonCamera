@@ -46,6 +46,14 @@ public class ExifDialogViewModel extends AndroidViewModel {
     private final ExifDialogModel exifDialogModel;
     private final Handler histoHandler = new Handler(Looper.getMainLooper());
     private Runnable histoRunnable;
+    /**
+     * Guards histogram loads against swipe races: each request bumps the
+     * generation and only the latest generation may publish its model, so a
+     * slow (or cached-fast) load for a previous image can never overwrite the
+     * current one.
+     */
+    private int histogramGeneration;
+    private CustomTarget<Bitmap> histogramTarget;
 
     public ExifDialogViewModel(Application application) {
         super(application);
@@ -148,26 +156,47 @@ public class ExifDialogViewModel extends AndroidViewModel {
         if (histoRunnable != null) {
             histoHandler.removeCallbacks(histoRunnable);
         }
-        histoHandler.post(histoRunnable = () ->
-                Glide.with(getApplication())
-                        .asBitmap()
-                        .load(imageFile.getFileUri())
-                        .apply(new RequestOptions()
-                                .diskCacheStrategy(DiskCacheStrategy.RESOURCE)
-                                .signature(new ObjectKey("hist" + imageFile.getDisplayName() + imageFile.getLastModified()))
-                                .override(800) //800*800
-                                .fitCenter().useUnlimitedSourceGeneratorsPool(true))
-                .into(new CustomTarget<Bitmap>() {
-                    @Override
-                    public void onResourceReady(@NonNull Bitmap resource, @Nullable Transition<? super Bitmap> transition) {
-                        exifDialogModel.setHistogramModel(histogram.analyze(resource));
+        // Cancel any in-flight load for the previous image and clear its bars
+        // immediately so stale data is never shown while the new load runs.
+        if (histogramTarget != null) {
+            try {
+                Glide.with(getApplication()).clear(histogramTarget);
+            } catch (Exception ignored) {}
+            histogramTarget = null;
+        }
+        exifDialogModel.setHistogramModel(null);
+        final int generation = ++histogramGeneration;
+        histoHandler.post(histoRunnable = () -> {
+                    if (generation != histogramGeneration) {
+                        return;
                     }
+                    histogramTarget = new CustomTarget<Bitmap>() {
+                        @Override
+                        public void onResourceReady(@NonNull Bitmap resource, @Nullable Transition<? super Bitmap> transition) {
+                            if (generation != histogramGeneration) {
+                                return;
+                            }
+                            histogramTarget = null;
+                            exifDialogModel.setHistogramModel(histogram.analyze(resource));
+                        }
 
-                    @Override
-                    public void onLoadCleared(@Nullable Drawable placeholder) {
-
-                    }
-                }));
+                        @Override
+                        public void onLoadCleared(@Nullable Drawable placeholder) {
+                            if (histogramTarget == this) {
+                                histogramTarget = null;
+                            }
+                        }
+                    };
+                    Glide.with(getApplication())
+                            .asBitmap()
+                            .load(imageFile.getFileUri())
+                            .apply(new RequestOptions()
+                                    .diskCacheStrategy(DiskCacheStrategy.RESOURCE)
+                                    .signature(new ObjectKey("hist" + imageFile.getDisplayName() + imageFile.getLastModified()))
+                                    .override(800) //800*800
+                                    .fitCenter().useUnlimitedSourceGeneratorsPool(true))
+                            .into(histogramTarget);
+                });
     }
 
     private String getDateText(String savedDate) {
