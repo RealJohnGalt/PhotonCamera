@@ -96,6 +96,12 @@ public class ImageViewerFragment extends Fragment implements ImageAdapter.HdrSta
     /** Minimum interval between backdrop refreshes while panning/zooming. */
     private static final long EXIF_BLUR_THROTTLE_MS = 80L;
     /**
+     * Delay after the last touch event before a final settle capture runs.
+     * Guarantees the backdrop ends on the settled zoom/pan state instead of a
+     * mid-gesture frame.
+     */
+    private static final long EXIF_BLUR_SETTLE_DELAY_MS = 150L;
+    /**
      * Rounded-corner mask applied *after* the GPU blur. Only RenderEffect chains
      * can mask after a blur without smearing the content back into the corners.
      */
@@ -122,6 +128,7 @@ public class ImageViewerFragment extends Fragment implements ImageAdapter.HdrSta
     private long exifBlurLastCaptureMs;
     private final Handler exifBlurHandler = new Handler(Looper.getMainLooper());
     private final Runnable exifBlurCaptureRunnable = this::captureExifBlur;
+    private final Runnable exifBlurSettleRunnable = () -> captureExifBlur();
     private String mode;
     private int seek_position = 0;
     private int lastHdrPosition = -1;
@@ -146,8 +153,26 @@ public class ImageViewerFragment extends Fragment implements ImageAdapter.HdrSta
         @Override public void onCenterChanged(PointF newCenter, int origin) {
             scheduleExifBlurRefresh();
         }
-        @Override public void onTouched(int id) {}
+        @Override public void onTouched(int id) {
+            scheduleExifBlurSettle();
+        }
     };
+
+    /**
+     * Debounced settle capture: re-posted on every touch event, so it only
+     * runs once gestures stop, landing the backdrop on the final zoom/pan
+     * state. Bypasses the throttle — that is the point.
+     */
+    private void scheduleExifBlurSettle() {
+        if (!isAdded() || fragmentGalleryImageViewerBinding == null) {
+            return;
+        }
+        if (!Boolean.TRUE.equals(fragmentGalleryImageViewerBinding.getExifDialogVisible())) {
+            return;
+        }
+        exifBlurHandler.removeCallbacks(exifBlurSettleRunnable);
+        exifBlurHandler.postDelayed(exifBlurSettleRunnable, EXIF_BLUR_SETTLE_DELAY_MS);
+    }
     private int indexToDelete = -1;
     /**
      * Gallery chrome (top/bottom controls) state for photo pages. Video pages
@@ -210,6 +235,7 @@ public class ImageViewerFragment extends Fragment implements ImageAdapter.HdrSta
             clock.cancel();
         }
         exifBlurHandler.removeCallbacks(exifBlurCaptureRunnable);
+        exifBlurHandler.removeCallbacks(exifBlurSettleRunnable);
         clearExifBlur();
     }
 
@@ -874,7 +900,6 @@ public class ImageViewerFragment extends Fragment implements ImageAdapter.HdrSta
         if (!isAdded() || fragmentGalleryImageViewerBinding == null) {
             return;
         }
-        exifBlurLastCaptureMs = SystemClock.uptimeMillis();
         if (!Boolean.TRUE.equals(fragmentGalleryImageViewerBinding.getExifDialogVisible())) {
             return;
         }
@@ -885,8 +910,11 @@ public class ImageViewerFragment extends Fragment implements ImageAdapter.HdrSta
         View panel = fragmentGalleryImageViewerBinding.exifLayout.getRoot();
         ImageView backdrop = fragmentGalleryImageViewerBinding.exifLayout.exifBlurBackdrop;
         if (ssiv == null || !ssiv.isReady() || panel == null || backdrop == null) {
+            // Dropped without stamping the throttle clock so the next
+            // scheduled refresh is not pushed out by a missed frame.
             return;
         }
+        exifBlurLastCaptureMs = SystemClock.uptimeMillis();
         int panelWidth = panel.getWidth();
         int panelHeight = panel.getHeight();
         if (panelWidth <= 0 || panelHeight <= 0) {
