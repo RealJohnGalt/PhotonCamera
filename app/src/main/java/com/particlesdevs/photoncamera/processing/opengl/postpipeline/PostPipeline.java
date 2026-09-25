@@ -1238,8 +1238,36 @@ public class PostPipeline extends GLBasePipeline {
         prog.setTexture("GainMap", gainTex);
         prog.setVar("rotate", rotationIndex());
         prog.setVar("mirror", mParameters.mirror ? 1 : 0);
-        prog.setVar("cropSize", cropSize);
-        prog.setVar("rawSize", mParameters.rawSize);
+        // The rotate/mirror branches and the GainMap fetch in sceneluma.glsl
+        // operate in input-texture coordinates, but cropSize/rawSize fields
+        // describe the pre-resize base (zoom expand and/or the per-sensor
+        // upscale/downscale factor change the input size afterwards). Without
+        // rescaling, mirror+rot90/270 (front camera) keys
+        // "cropSize.y - xy" off the 1x size while xy spans the 2x plane, so
+        // the scene luma covers only half the frame and the gain map shifts.
+        // Scale both into the input domain; identity when not resized.
+        // (RotateWatermark already binds the actual texture size, which is
+        // why only the gain map was visibly shifted.)
+        Point scaledCrop = cropSize;
+        Point scaledRaw = mParameters != null ? mParameters.rawSize : null;
+        try {
+            if (cropSize != null && inFull != null
+                    && cropSize.x > 0 && cropSize.y > 0
+                    && inFull.x > 0 && inFull.y > 0) {
+                float sx = inFull.x / (float) cropSize.x;
+                float sy = inFull.y / (float) cropSize.y;
+                scaledCrop = new Point(inFull);
+                if (scaledRaw != null && scaledRaw.x > 0 && scaledRaw.y > 0) {
+                    scaledRaw = new Point(Math.max(1, Math.round(scaledRaw.x * sx)),
+                            Math.max(1, Math.round(scaledRaw.y * sy)));
+                } else {
+                    scaledRaw = new Point(inFull);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        prog.setVar("cropSize", scaledCrop);
+        prog.setVar("rawSize", scaledRaw);
         prog.setVar("uLinFullSize", sdrSize.x, sdrSize.y);
         prog.setVar("uLinGridSize", gw, gh);
         prog.setVar("uInFull", inFull);
