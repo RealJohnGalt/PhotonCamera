@@ -20,14 +20,21 @@ import static android.opengl.GLES20.GL_CLAMP_TO_EDGE;
 import static android.opengl.GLES20.GL_LINEAR;
 
 /**
- * Expands a cropped capture to the requested full-frame output size.
+ * Expands or shrinks the capture to the requested output size.
+ *
+ * <p>Output size is the zoom-expanded full size when cropped, otherwise the
+ * input size, scaled by the active per-sensor factor ({@code upscaleFactor} /
+ * {@code upscaleFactorQb} on {@link com.particlesdevs.photoncamera.processing.render.Parameters}).
+ * Applies to cropped and uncropped shots alike; Disabled (default) keeps the
+ * legacy behavior (crops expand, uncropped passthrough).</p>
  *
  * <p>When KernelNet params are available (exported by the merge pass, or
- * inferred on the single-frame path by {@link KernelNetPrep}), the crop is
+ * inferred on the single-frame path by {@link KernelNetPrep}), the resize is
  * reconstructed with a locally anisotropic Gaussian kernel (Wronski et al.,
  * "Procedural Kernel Networks", section 4.3) steered by those params -
  * edge-aligned interpolation at no additional inference cost, plus an
- * optional edge-aligned unsharp term for acutance at extreme zoom. Otherwise
+ * optional edge-aligned unsharp term for acutance at extreme zoom. Used for
+ * both up and down resizes. Otherwise
  * the pipeline's existing bicubic GPU interpolation path is used.</p>
  */
 public final class UpscaleCrop extends Node {
@@ -194,21 +201,18 @@ public final class UpscaleCrop extends Node {
             basePipeline.main3 = null;
         }
 
-        if (basePipeline.mParameters.fullRawSize == null ||
+        if (basePipeline.mParameters.fullRawSize == null &&
+                com.particlesdevs.photoncamera.processing.render.Parameters.isResizeDisabled(
+                        basePipeline.mParameters.getActiveUpscaleFactor()) &&
                 !basePipeline.mParameters.isCropped) {
-            // Non-cropped: KernelNet params have no consumer in this path, so
-            // the ESD4D result ferry must not ride through the whole render
-            // (and leak until process death if left to close()).
+            // Fully native path with no resize requested: params have no
+            // consumer, free the ferry instead of leaking it to close().
             freeUnusedKernelParams(pp);
             WorkingTexture = input;
             return;
         }
 
-        Point fullSize = basePipeline.mParameters.fullRawSize;
-
-        if (fullSize.x <= 0 ||
-                fullSize.y <= 0 ||
-                input.mSize.x <= 0 ||
+        if (input.mSize.x <= 0 ||
                 input.mSize.y <= 0) {
             freeUnusedKernelParams(pp);
             WorkingTexture = input;
@@ -216,20 +220,14 @@ public final class UpscaleCrop extends Node {
         }
 
         /*
-         * Keep output dimensions divisible by four, matching the crop/output
-         * sizing convention already used by PostPipeline.
+         * Output size: zoom-expanded full size when cropped, otherwise the
+         * input size, scaled by the active per-sensor factor. Keeps output
+         * dimensions divisible by four, matching the crop/output sizing
+         * convention already used by PostPipeline. Applies to cropped and
+         * uncropped shots alike.
          */
-        Point target = new Point(
-                fullSize.x & ~3,
-                fullSize.y & ~3);
-
-        if (target.x < 4) {
-            target.x = 4;
-        }
-
-        if (target.y < 4) {
-            target.y = 4;
-        }
+        Point target = com.particlesdevs.photoncamera.processing.render.Parameters.computeResizedTarget(
+                basePipeline.mParameters, input.mSize);
 
         if (target.equals(input.mSize)) {
             freeUnusedKernelParams(pp);

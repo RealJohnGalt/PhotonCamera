@@ -134,6 +134,99 @@ public class Parameters {
     )
     float blackLevelOverride;
 
+    @SensorConfig(title = "Upscale or Downscale",
+            description = "Output resize factor applied after zoom expand, using KernelNet guided reconstruction for both up and down (Quad Bayer OFF). Disabled keeps native output size",
+            entries = {"Disabled", "0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "1.75x", "2.0x"},
+            entryValues = {"0", "0.5", "0.75", "1.0", "1.25", "1.5", "1.75", "2.0"},
+            defaultValue = 0
+    )
+    public float upscaleFactor = 0;
+
+    @SensorConfig(title = "Upscale or Downscale (Quad Bayer)",
+            description = "Output resize factor applied after zoom expand, using KernelNet guided reconstruction for both up and down (Quad Bayer ON). Disabled keeps native output size",
+            entries = {"Disabled", "0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "1.75x", "2.0x"},
+            entryValues = {"0", "0.5", "0.75", "1.0", "1.25", "1.5", "1.75", "2.0"},
+            defaultValue = 0
+    )
+    public float upscaleFactorQb = 0;
+
+    /**
+     * Active per-sensor resize factor: Quad Bayer value when Quad Bayer is on,
+     * otherwise the main value. 0 (or &lt;= 0) means Disabled.
+     */
+    public float getActiveUpscaleFactor() {
+        try {
+            if (PhotonCamera.getSettings() != null && PhotonCamera.getSettings().QuadBayer) {
+                return upscaleFactorQb;
+            }
+        } catch (Exception ignored) {
+        }
+        return upscaleFactor;
+    }
+
+    /** True when the factor selects an actual resize (any positive non-1.0 value counts; 1.0x is a size no-op). */
+    public static boolean isResizeDisabled(float factor) {
+        return factor <= 0.0001f;
+    }
+
+    /** True when factor requests a resize that changes pixel dimensions. */
+    public static boolean isResizeActive(float factor) {
+        return factor > 0.0001f && Math.abs(factor - 1.0f) > 1e-4f;
+    }
+
+    /**
+     * Final post-pipeline output size for the given pre-resize size.
+     *
+     * <p>Base is the zoom-expanded full size when cropped, otherwise the
+     * supplied {@code rawSliced} (already aspect-corrected by the caller).
+     * The active per-sensor factor then scales that base. Output stays
+     * divisible by four (pipeline convention), min 4px, clamped to an
+     * 8192px long edge and 64MP to bound 2.0x on high-MP sensors.
+     */
+    public static Point computeResizedTarget(Parameters p, Point rawSliced) {
+        Point fallback = rawSliced != null ? rawSliced : (p != null ? p.rawSize : null);
+        Point base;
+        if (p != null && p.isCropped && p.fullRawSize != null
+                && p.fullRawSize.x > 0 && p.fullRawSize.y > 0) {
+            base = new Point(p.fullRawSize.x & ~3, p.fullRawSize.y & ~3);
+        } else if (fallback != null) {
+            base = new Point(fallback.x & ~3, fallback.y & ~3);
+        } else {
+            return new Point(4, 4);
+        }
+        if (base.x < 4) base.x = 4;
+        if (base.y < 4) base.y = 4;
+        float factor = p != null ? p.getActiveUpscaleFactor() : 0f;
+        if (isResizeDisabled(factor)) {
+            return base;
+        }
+        if (factor < 0.25f) factor = 0.25f;
+        if (factor > 4.0f) factor = 4.0f;
+        int tx = ((int) (base.x * factor)) & ~3;
+        int ty = ((int) (base.y * factor)) & ~3;
+        if (tx < 4) tx = 4;
+        if (ty < 4) ty = 4;
+        // Bound memory: 8192px long edge, 64MP total, aspect-preserving.
+        int longEdge = Math.max(tx, ty);
+        if (longEdge > 8192) {
+            float s = 8192f / longEdge;
+            tx = ((int) (tx * s)) & ~3;
+            ty = ((int) (ty * s)) & ~3;
+            if (tx < 4) tx = 4;
+            if (ty < 4) ty = 4;
+        }
+        long pixels = (long) tx * (long) ty;
+        final long maxPixels = 64L * 1024L * 1024L;
+        if (pixels > maxPixels) {
+            float s = (float) Math.sqrt(maxPixels / (double) pixels);
+            tx = ((int) (tx * s)) & ~3;
+            ty = ((int) (ty * s)) & ~3;
+            if (tx < 4) tx = 4;
+            if (ty < 4) ty = 4;
+        }
+        return new Point(tx, ty);
+    }
+
     public void FillConstParameters(CameraCharacteristics characteristics, Point size) {
         com.particlesdevs.photoncamera.settings.TunableInjector.inject(this);
         cameraID = PhotonCamera.getSettings().mCameraID;

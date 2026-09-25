@@ -357,10 +357,7 @@ public class PostPipeline extends GLBasePipeline {
         adaptiveWhitePoint = 1.0f;
         rawClipLevel = 1.0f;
         exposureCurve = null;
-        Point targetSliced = new Point(rawSliced.x, rawSliced.y);
-        if (parameters.fullRawSize != null && parameters.isCropped) {
-            targetSliced = new Point(parameters.fullRawSize.x & ~3, parameters.fullRawSize.y & ~3);
-        }
+        Point targetSliced = Parameters.computeResizedTarget(parameters, rawSliced);
         Point rotatedSize = getRotatedCoords(targetSliced);
         captureOutputSize = new Point(rotatedSize);
         if (PhotonCamera.getSettings().energySaving || mParameters.rawSize.x * mParameters.rawSize.y < ResolutionSolution.smallRes) {
@@ -506,14 +503,10 @@ public class PostPipeline extends GLBasePipeline {
                         BufferUtils.getFrom(new float[]{1f, 1f, 1f, 1f}), GL_LINEAR, GL_CLAMP_TO_EDGE);
             }
             GLTexture input = tex;
-            if (mParameters.fullRawSize != null && mParameters.isCropped) {
-                Point linTarget = new Point(
-                        mParameters.fullRawSize.x & ~3,
-                        mParameters.fullRawSize.y & ~3);
-                if (!linTarget.equals(tex.mSize)) {
-                    linFull = glint.glUtils.interpolate(tex, linTarget);
-                    input = linFull;
-                }
+            Point linTarget = Parameters.computeResizedTarget(mParameters, tex.mSize);
+            if (!linTarget.equals(tex.mSize)) {
+                linFull = glint.glUtils.interpolate(tex, linTarget);
+                input = linFull;
             }
             GLProg prog = glint.glProgram;
             bindSceneluma(prog, gainTex, captureOutputSize, gw, gh, input.mSize);
@@ -571,9 +564,15 @@ public class PostPipeline extends GLBasePipeline {
         // Prefer the async PBO transfer: it overlaps the rest of the render
         // and is completed at Run end. Bytes are identical on success; any
         // failure falls through to the synchronous path below. Skipped when
-        // cropped: UpscaleCrop closes and recreates the mains mid-flight,
+        // resized: UpscaleCrop closes and recreates the mains mid-flight,
         // which may delete the source texture before the fence signals.
-        GLTexture.AsyncRead async = (mParameters == null || mParameters.isCropped)
+        boolean willResize = false;
+        try {
+            Point resizeTarget = Parameters.computeResizedTarget(mParameters, new Point(tex.mSize));
+            willResize = resizeTarget != null && !resizeTarget.equals(tex.mSize);
+        } catch (Exception ignored) {
+        }
+        GLTexture.AsyncRead async = (mParameters == null || willResize)
                 ? null : tex.beginAsyncHalfFloatRead();
         if (async != null) {
             pendingSnapshotRead = async;
@@ -689,10 +688,7 @@ public class PostPipeline extends GLBasePipeline {
         workSize = new Point(cropSize.x, cropSize.y);
         computeNoise(parameters);
         captureDemosaic = false;
-        Point targetSliced = new Point(rawSliced.x, rawSliced.y);
-        if (parameters.fullRawSize != null && parameters.isCropped) {
-            targetSliced = new Point(parameters.fullRawSize.x & ~3, parameters.fullRawSize.y & ~3);
-        }
+        Point targetSliced = Parameters.computeResizedTarget(parameters, rawSliced);
         Point rotatedSize = getRotatedCoords(targetSliced);
         // The gain map must be pixel-aligned with the stored SDR base; any
         // size/orientation mismatch displaces the boost field from the scene.
@@ -751,11 +747,13 @@ public class PostPipeline extends GLBasePipeline {
 
             Point linearSize = demosaicLinearSize != null ? new Point(demosaicLinearSize) : null;
             // Banded sceneluma (P3-B) streams the snapshot in bands and never
-            // materializes a full linTex; cropped shots (interpolate) and the
-            // rare float32 snapshot keep the legacy full path. The snapshot
-            // is freed after the sceneluma section in both paths.
+            // materializes a full linTex; resized shots (zoom expand or
+            // explicit per-sensor factor, detected via target vs work size)
+            // and the rare float32 snapshot keep the legacy full path. The
+            // snapshot is freed after the sceneluma section in both paths.
+            boolean resized = !targetSliced.equals(workSize);
             boolean needFullLin = linearSize != null
-                    && ((parameters.fullRawSize != null && parameters.isCropped)
+                    && (resized
                     || !demosaicLinearHalfFloat);
 
             // sdrTex upload moved below the sceneluma section (P3-C: peaks
@@ -1270,15 +1268,11 @@ public class PostPipeline extends GLBasePipeline {
                     demosaicLinear);
         }
         try {
-            if (mParameters.fullRawSize != null && mParameters.isCropped) {
-                Point linTarget = new Point(
-                        mParameters.fullRawSize.x & ~3,
-                        mParameters.fullRawSize.y & ~3);
-                if (!linTarget.equals(linearSize)) {
-                    GLTexture linFull = glint.glUtils.interpolate(linTex, linTarget);
-                    linTex.close();
-                    linTex = linFull;
-                }
+            Point linTarget = Parameters.computeResizedTarget(mParameters, linearSize);
+            if (!linTarget.equals(linearSize)) {
+                GLTexture linFull = glint.glUtils.interpolate(linTex, linTarget);
+                linTex.close();
+                linTex = linFull;
             }
             GLProg prog = glint.glProgram;
             bindSceneluma(prog, gainTex, sdrSize, gw, gh, linTex.mSize);
@@ -1537,10 +1531,11 @@ public class PostPipeline extends GLBasePipeline {
                 add(new Initial());
             }
         }
-        // Crops expand to the full-frame output size BEFORE the local-contrast
-        // and sharpening passes, so those run at output resolution like any
-        // other shot - otherwise their crop-resolution halos get magnified by
-        // the zoom factor and read as pixelation along edges.
+        // Resizes (zoom expand and/or explicit per-sensor factor) happen BEFORE
+        // the local-contrast and sharpening passes, so those run at output
+        // resolution like any other shot - otherwise their crop-resolution
+        // halos get magnified by the zoom factor and read as pixelation
+        // along edges.
         add(new UpscaleCrop());
         add(new LocalLaplacian2());
         add(new CaptureSharpening());
