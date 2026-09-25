@@ -66,6 +66,15 @@ public final class UpscaleCrop extends Node {
     @Tunable(title = "KernelNet upscale acutance width", category = "Upscale", description = "Sigma multiplier of the wide pass used by the unsharp term (higher = softer wide pass, stronger bandpass). Effective value is capped at radius/(2*sigmaMax) so the wide kernel fits the window", min = 1.1f, max = 4.0f, step = 0.05f, defaultValue = 2.2f)
     float sharpWide;
 
+    @Tunable(title = "KernelNet downscale min sigma", category = "Upscale", description = "Frozen sigma floor in input pixels used when downscaling (zoom > 1): unlike the upscale path it is NOT multiplied by zoom, so kernels stay tight and crisp. Capped at the effective max below", min = 0.1f, max = 8.0f, step = 0.05f, defaultValue = 0.8f)
+    float downFloorPx;
+
+    @Tunable(title = "KernelNet downscale max-sigma growth", category = "Upscale", description = "Scale-aware AA growth: effective max = min(sigmaMax, downFloor + growth*(zoomMax-1)). 0 keeps the tightest cap at all downscale factors; higher lets strong downscales widen toward sigmaMax for antialiasing", min = 0.0f, max = 2.0f, step = 0.05f, defaultValue = 0.5f)
+    float downSigmaGrowth;
+
+    @Tunable(title = "KernelNet downscale acutance growth", category = "Upscale", description = "Scale-aware sharpness: effective sharpAmt = sharpAmt*(1+growth*log2(zoomMax)) on downscales, recovering acutance lost to the wider AA kernel. 0 disables the boost", min = 0.0f, max = 2.0f, step = 0.05f, defaultValue = 0.5f)
+    float downSharpMpy;
+
     @Tunable(title = "Debug: dump kernelnet params", category = "Upscale", description = "Renders the KernelNet params map (s1, s2, rho as RGB) into the debug overlay", min = 0, max = 1, step = 1, defaultValue = 0)
     int debugParams;
 
@@ -83,6 +92,9 @@ public final class UpscaleCrop extends Node {
     private float anisoZoomY = 1f;
     private float anisoMinX = 0f;
     private float anisoMinY = 0f;
+    private float anisoSigmaMaxEff = 1.2f;
+    private int anisoRadiusEff = 5;
+    private float anisoSharpAmtEff = 0.75f;
 
     public UpscaleCrop() {
         super("", "UpscaleCrop");
@@ -304,16 +316,47 @@ public final class UpscaleCrop extends Node {
             dumpParams(params, paramsSize);
 
             /*
-             * Per-axis sigma floor in crop pixels: a constant floor in output
-             * pixels keeps the reconstruction equally crisp at every zoom
-             * factor, with an absolute crop-pixel floor so the tap weights
-             * never collapse numerically. The floor is capped at sigmaMaxPx:
-             * clamp(s, min, max) with min > max is undefined in GLSL.
+             * Per-axis sigma floor in input pixels, scale-aware:
+             * - Upscale (zoom <= 1): legacy constant floor in output pixels
+             *   (outFloorPx*zoom) keeps the reconstruction equally crisp at
+             *   every zoom factor, with an absolute input-pixel floor so tap
+             *   weights never collapse. Capped at sigmaMaxPx: clamp(s, min,
+             *   max) with min > max is undefined in GLSL.
+             * - Downscale (zoom > 1): frozen floor (downFloorPx, NOT multiplied
+             *   by zoom) keeps kernels tight and crisp; the effective max grows
+             *   slowly with zoom for antialiasing: min(sigmaMax,
+             *   downFloor+growth*(zoomMax-1)). Floor is re-capped at that
+             *   effective max per axis.
              */
             float zoomX = input.mSize.x / (float) target.x;
             float zoomY = input.mSize.y / (float) target.y;
-            float minX = Math.min(Math.max(absMinPx, outFloorPx * zoomX), sigmaMaxPx);
-            float minY = Math.min(Math.max(absMinPx, outFloorPx * zoomY), sigmaMaxPx);
+            float zoomMax = Math.max(zoomX, zoomY);
+            float minX;
+            float minY;
+            float sigmaMaxEff;
+            float sharpAmtEff;
+            int radiusEff = Math.min(Math.max(kernelRadius, 1), 5);
+            if (zoomMax <= 1.0f + 1e-4f) {
+                minX = Math.min(Math.max(absMinPx, outFloorPx * zoomX), sigmaMaxPx);
+                minY = Math.min(Math.max(absMinPx, outFloorPx * zoomY), sigmaMaxPx);
+                sigmaMaxEff = sigmaMaxPx;
+                sharpAmtEff = sharpAmt;
+            } else {
+                float downExcess = zoomMax - 1.0f;
+                sigmaMaxEff = Math.min(sigmaMaxPx, downFloorPx + downSigmaGrowth * downExcess);
+                sigmaMaxEff = Math.max(sigmaMaxEff, absMinPx);
+                float downFloorCapped = Math.min(Math.max(absMinPx, downFloorPx), sigmaMaxEff);
+                // Per-axis freeze: an axis that still upscales (mixed aspect)
+                // keeps the legacy output-pixel floor on that axis.
+                minX = zoomX > 1.0f ? downFloorCapped
+                        : Math.min(Math.max(absMinPx, outFloorPx * zoomX), sigmaMaxEff);
+                minY = zoomY > 1.0f ? downFloorCapped
+                        : Math.min(Math.max(absMinPx, outFloorPx * zoomY), sigmaMaxEff);
+                sharpAmtEff = sharpAmt
+                        * (1.0f + downSharpMpy * (float) (Math.log(zoomMax) / Math.log(2.0)));
+                if (sharpAmtEff < 0.0f) sharpAmtEff = 0.0f;
+                if (sharpAmtEff > 1.5f) sharpAmtEff = 1.5f;
+            }
 
             GLTexture out = new GLTexture(target, input.mFormat);
             glProg.useAssetProgram("upscalecrop/anisoupscale");
@@ -323,6 +366,9 @@ public final class UpscaleCrop extends Node {
             anisoZoomY = zoomY;
             anisoMinX = minX;
             anisoMinY = minY;
+            anisoSigmaMaxEff = sigmaMaxEff;
+            anisoRadiusEff = radiusEff;
+            anisoSharpAmtEff = sharpAmtEff;
             rebindAniso(input, input, 0, 0);
             glProg.drawBlocks(out);
             glProg.closed = true;
@@ -366,10 +412,10 @@ public final class UpscaleCrop extends Node {
         glProg.setVar("scaleRatio", 1.0f / anisoZoomX, 1.0f / anisoZoomY);
         glProg.setVar("sigmaScale", sigmaScale);
         glProg.setVar("sigmaMinPx", anisoMinX, anisoMinY);
-        glProg.setVar("sigmaMaxPx", sigmaMaxPx);
+        glProg.setVar("sigmaMaxPx", anisoSigmaMaxEff);
         glProg.setVar("strength", anisoStrength);
-        glProg.setVar("kernelRadius", kernelRadius);
-        glProg.setVar("sharpAmt", sharpAmt);
+        glProg.setVar("kernelRadius", anisoRadiusEff);
+        glProg.setVar("sharpAmt", anisoSharpAmtEff);
         glProg.setVar("sharpWide", sharpWide);
         glProg.setVar("maxElong", maxElong);
         glProg.setVar("debugMode", debugUpscale);
