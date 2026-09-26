@@ -180,8 +180,8 @@ public class Parameters {
      * <p>Base is the zoom-expanded full size when cropped, otherwise the
      * supplied {@code rawSliced} (already aspect-corrected by the caller).
      * The active per-sensor factor then scales that base. Output stays
-     * divisible by four (pipeline convention), min 4px, clamped to an
-     * 8192px long edge and 64MP to bound 2.0x on high-MP sensors.
+     * divisible by four (pipeline convention), min 4px. No upper cap: the
+     * pipeline allocates what the factor requests.
      */
     public static Point computeResizedTarget(Parameters p, Point rawSliced) {
         Point fallback = rawSliced != null ? rawSliced : (p != null ? p.rawSize : null);
@@ -206,24 +206,6 @@ public class Parameters {
         int ty = ((int) (base.y * factor)) & ~3;
         if (tx < 4) tx = 4;
         if (ty < 4) ty = 4;
-        // Bound memory: 8192px long edge, 64MP total, aspect-preserving.
-        int longEdge = Math.max(tx, ty);
-        if (longEdge > 8192) {
-            float s = 8192f / longEdge;
-            tx = ((int) (tx * s)) & ~3;
-            ty = ((int) (ty * s)) & ~3;
-            if (tx < 4) tx = 4;
-            if (ty < 4) ty = 4;
-        }
-        long pixels = (long) tx * (long) ty;
-        final long maxPixels = 64L * 1024L * 1024L;
-        if (pixels > maxPixels) {
-            float s = (float) Math.sqrt(maxPixels / (double) pixels);
-            tx = ((int) (tx * s)) & ~3;
-            ty = ((int) (ty * s)) & ~3;
-            if (tx < 4) tx = 4;
-            if (ty < 4) ty = 4;
-        }
         return new Point(tx, ty);
     }
 
