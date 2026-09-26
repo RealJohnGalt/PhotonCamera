@@ -219,6 +219,66 @@ public class PostPipeline extends GLBasePipeline {
         }
     }
 
+    /**
+     * Normalized crop footprint inside the full-frame lens-shading map, as
+     * (minX, minY, maxX, maxY) for the tone/sceneluma {@code u_gainMin} /
+     * {@code u_gainMax} uniforms. A zoom crop must sample its own footprint
+     * (usually central, small gains) instead of the full map stretched over
+     * it (full-frame edge lift on every edge). Uncropped shots return the
+     * identity (0,0,1,1), for which mix() reproduces the legacy fetch
+     * bit-exactly.
+     */
+    public float[] gainFootprint() {
+        float minX = 0f, minY = 0f, maxX = 1f, maxY = 1f;
+        try {
+            if (mParameters != null && mParameters.isCropped
+                    && mParameters.cropOrigin != null && mParameters.fullRawSize != null
+                    && mParameters.fullRawSize.x > 0 && mParameters.fullRawSize.y > 0) {
+                int fw = mParameters.fullRawSize.x, fh = mParameters.fullRawSize.y;
+                int cw = mParameters.rawSize != null && mParameters.rawSize.x > 0
+                        ? mParameters.rawSize.x : fw;
+                int ch = mParameters.rawSize != null && mParameters.rawSize.y > 0
+                        ? mParameters.rawSize.y : fh;
+                minX = mParameters.cropOrigin.x / (float) fw;
+                minY = mParameters.cropOrigin.y / (float) fh;
+                maxX = (mParameters.cropOrigin.x + cw) / (float) fw;
+                maxY = (mParameters.cropOrigin.y + ch) / (float) fh;
+            }
+        } catch (Exception ignored) {
+        }
+        return new float[]{minX, minY, maxX, maxY};
+    }
+
+    /**
+     * Sensor-pixel bounds for the tone shaders' {@code mirrorCoords} fold,
+     * rescaled into the given input-texture domain as (x0, y0, x1, y1).
+     *
+     * <p>The fold operates on output coordinates, but {@code sensorPix} stays
+     * in the base (sensor) domain while the draw/input textures are
+     * target-size after a resize (zoom expand and/or per-sensor factor, now
+     * placed before tonemap). Unscaled bounds fold every coordinate past the
+     * base extents back with mirroring, so resized frames come out as
+     * mirrored/tiled copies. Identity when the input matches rawSize, i.e.
+     * zero behavior change on the native path.
+     */
+    public int[] activeSizeForDomain(Point inputSize) {
+        int w = 0, h = 0;
+        if (mParameters != null && mParameters.sensorPix != null) {
+            w = mParameters.sensorPix.right - mParameters.sensorPix.left;
+            h = mParameters.sensorPix.bottom - mParameters.sensorPix.top;
+        }
+        float sx = 1f, sy = 1f;
+        if (mParameters != null && mParameters.rawSize != null && inputSize != null
+                && mParameters.rawSize.x > 0 && mParameters.rawSize.y > 0) {
+            sx = inputSize.x / (float) mParameters.rawSize.x;
+            sy = inputSize.y / (float) mParameters.rawSize.y;
+        }
+        if (w <= 0 && inputSize != null) w = inputSize.x;
+        if (h <= 0 && inputSize != null) h = inputSize.y;
+        return new int[]{Math.round(2 * sx), Math.round(2 * sy),
+                Math.max(1, Math.round((w - 2) * sx)), Math.max(1, Math.round((h - 2) * sy))};
+    }
+
     @Tunable(
         title = "Tiled Compare Harness",
         description = "Debug-only: compare tiled vs full-frame renders for bit-exactness (maxDiff must be 0). Consumed by the Phase-1 tile driver; inert until then.",
@@ -529,7 +589,12 @@ public class PostPipeline extends GLBasePipeline {
                         BufferUtils.getFrom(new float[]{1f, 1f, 1f, 1f}), GL_LINEAR, GL_CLAMP_TO_EDGE);
             }
             GLTexture input = tex;
-            Point linTarget = Parameters.computeResizedTarget(mParameters, tex.mSize);
+            // Target derived from the pre-resize base (cropSize field still
+            // holds rawSliced here; tex itself is already post-upscale since
+            // the linear-domain move). Deriving from tex would apply the
+            // factor twice (0.5x -> 0.25x scene, 2x -> 4x scene/OOM).
+            Point baseSize = cropSize != null ? cropSize : tex.mSize;
+            Point linTarget = Parameters.computeResizedTarget(mParameters, baseSize);
             if (!linTarget.equals(tex.mSize)) {
                 linFull = glint.glUtils.interpolate(tex, linTarget);
                 input = linFull;
@@ -748,11 +813,13 @@ public class PostPipeline extends GLBasePipeline {
         glint = new GLInterface(glproc);
         glint.parameters = parameters;
 
-        // Defensive: the measured linear buffer must match the pipeline input size,
-        // otherwise the scene sampling is out of bounds and the gain map is garbage.
+        // Defensive: the measured linear buffer must match the pipeline
+        // output size (post-upscale, since the snapshot is captured after
+        // the linear-domain resize), otherwise the scene sampling is out of
+        // bounds and the gain map is garbage.
         // The P3-I grid path has no snapshot, so this check only applies to it.
         if (demosaicLinearSize != null
-                && (demosaicLinearSize.x != workSize.x || demosaicLinearSize.y != workSize.y)) {
+                && (demosaicLinearSize.x != targetSliced.x || demosaicLinearSize.y != targetSliced.y)) {
             throw new IllegalStateException("Linear buffer size " + demosaicLinearSize
                     + " does not match workSize " + workSize
                     + "; cannot measure scene plane");
@@ -1264,36 +1331,37 @@ public class PostPipeline extends GLBasePipeline {
         prog.setTexture("GainMap", gainTex);
         prog.setVar("rotate", rotationIndex());
         prog.setVar("mirror", mParameters.mirror ? 1 : 0);
-        // The rotate/mirror branches and the GainMap fetch in sceneluma.glsl
-        // operate in input-texture coordinates, but cropSize/rawSize fields
-        // describe the pre-resize base (zoom expand and/or the per-sensor
-        // upscale/downscale factor change the input size afterwards). Without
-        // rescaling, mirror+rot90/270 (front camera) keys
-        // "cropSize.y - xy" off the 1x size while xy spans the 2x plane, so
-        // the scene luma covers only half the frame and the gain map shifts.
-        // Scale both into the input domain; identity when not resized.
-        // (RotateWatermark already binds the actual texture size, which is
-        // why only the gain map was visibly shifted.)
+        // Geometry uniforms follow the resized input domain (see
+        // activeSizeForDomain): the resize factor must be uniform, so it is
+        // accepted only on an exact target match. Aspect169 slices one axis
+        // without resizing, which would otherwise derive a distorting
+        // non-uniform scale; it keeps base-domain bounds instead.
         Point scaledCrop = cropSize;
         Point scaledRaw = mParameters != null ? mParameters.rawSize : null;
         try {
-            if (cropSize != null && inFull != null
-                    && cropSize.x > 0 && cropSize.y > 0
-                    && inFull.x > 0 && inFull.y > 0) {
-                float sx = inFull.x / (float) cropSize.x;
-                float sy = inFull.y / (float) cropSize.y;
-                scaledCrop = new Point(inFull);
-                if (scaledRaw != null && scaledRaw.x > 0 && scaledRaw.y > 0) {
-                    scaledRaw = new Point(Math.max(1, Math.round(scaledRaw.x * sx)),
-                            Math.max(1, Math.round(scaledRaw.y * sy)));
-                } else {
-                    scaledRaw = new Point(inFull);
+            if (cropSize != null && inFull != null && mParameters != null
+                    && cropSize.x > 0 && cropSize.y > 0 && inFull.x > 0 && inFull.y > 0) {
+                Point expected = Parameters.computeResizedTarget(mParameters, new Point(cropSize));
+                if (expected != null && expected.equals(inFull)) {
+                    float fx = inFull.x / (float) cropSize.x;
+                    float fy = inFull.y / (float) cropSize.y;
+                    Point raw = mParameters.rawSize;
+                    scaledCrop = new Point(inFull);
+                    if (raw != null && raw.x > 0 && raw.y > 0) {
+                        scaledRaw = new Point(Math.max(1, Math.round(raw.x * fx)),
+                                Math.max(1, Math.round(raw.y * fy)));
+                    } else {
+                        scaledRaw = new Point(inFull);
+                    }
                 }
             }
         } catch (Exception ignored) {
         }
         prog.setVar("cropSize", scaledCrop);
         prog.setVar("rawSize", scaledRaw);
+        float[] fp = gainFootprint();
+        prog.setVar("u_gainMin", fp[0], fp[1]);
+        prog.setVar("u_gainMax", fp[2], fp[3]);
         prog.setVar("uLinFullSize", sdrSize.x, sdrSize.y);
         prog.setVar("uLinGridSize", gw, gh);
         prog.setVar("uInFull", inFull);
@@ -1322,7 +1390,10 @@ public class PostPipeline extends GLBasePipeline {
                     demosaicLinear);
         }
         try {
-            Point linTarget = Parameters.computeResizedTarget(mParameters, linearSize);
+            // Target from the pre-resize base (workSize still holds it in
+            // this pass); the snapshot itself is already post-upscale, so
+            // deriving from linearSize would apply the factor twice.
+            Point linTarget = Parameters.computeResizedTarget(mParameters, workSize);
             if (!linTarget.equals(linearSize)) {
                 GLTexture linFull = glint.glUtils.interpolate(linTex, linTarget);
                 linTex.close();
@@ -1564,6 +1635,13 @@ public class PostPipeline extends GLBasePipeline {
             }
         }
         add(new ABLC());
+        // Resizes (zoom expand and/or explicit per-sensor factor) reconstruct
+        // in LINEAR light, right after demosaic/denoise/ABLC: the guided
+        // anisotropic kernels operate on linear RGB, and the tone curve then
+        // adds contrast to real detail instead of interpolating crushed SDR.
+        // Local contrast and sharpening further down still run at output
+        // resolution like any other shot.
+        add(new UpscaleCrop());
         if ("off".equals(tonePipeline)) {
             // No tone/color stage: the linear camera RGB passes through
             // untouched. LinearExposure draws nothing but keeps the Ultra HDR
@@ -1585,12 +1663,6 @@ public class PostPipeline extends GLBasePipeline {
                 add(new Initial());
             }
         }
-        // Resizes (zoom expand and/or explicit per-sensor factor) happen BEFORE
-        // the local-contrast and sharpening passes, so those run at output
-        // resolution like any other shot - otherwise their crop-resolution
-        // halos get magnified by the zoom factor and read as pixelation
-        // along edges.
-        add(new UpscaleCrop());
         add(new LocalLaplacian2());
         add(new CaptureSharpening());
         add(new CorrectingFlow());
