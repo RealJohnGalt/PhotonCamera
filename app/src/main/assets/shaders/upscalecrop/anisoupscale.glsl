@@ -18,6 +18,7 @@ uniform float strength;
 uniform float sharpAmt;
 uniform float sharpWide;
 uniform float maxElong;
+uniform float gateExp;
 uniform vec2 scaleRatio;
 uniform int kernelRadius;
 uniform int debugMode;
@@ -124,11 +125,12 @@ void main() {
     vec2 sigmas;
     vec3 abc = anisoCoeffs(uv, sigmas);
     // Edge-confidence gate for the unsharp term: the used fraction of the
-    // allowed elongation. Near-isotropic kernels (flats, smooth gradients)
-    // get ~0 sharpening so noise and banding stay buried, while real edges
+    // allowed elongation, reshaped by gateExp (< 1 steepens so medium edges
+    // also sharpen; 1.0 is linear). Near-isotropic kernels (flats, smooth
+    // gradients) stay ~0 so noise and banding stay buried, while real edges
     // (elongation capped at maxElong) get the full sharpAmt.
     float elong = max(sigmas.x, sigmas.y) / max(min(sigmas.x, sigmas.y), 1e-4);
-    float gate = clamp((elong - 1.0) / max(maxElong - 1.0, 1e-4), 0.0, 1.0);
+    float gate = pow(clamp((elong - 1.0) / max(maxElong - 1.0, 1e-4), 0.0, 1.0), max(gateExp, 1e-3));
     float sharpWideEff = min(sharpWide, (0.5 * float(kernelRadius)) / sigmaMaxPx);
     vec3 abcWide = abc / (sharpWideEff * sharpWideEff);
     vec4 accN;
