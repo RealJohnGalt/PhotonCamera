@@ -317,12 +317,12 @@ public class ESD4D extends GLOneScript {
     private long halideLaunchMs;
     /** Dense optical-flow alignment (FlowNet); non-null when useNcnnFlow ran. */
     FlowNetAlignment flowNetAlignment;
-    @Tunable(title = "SR detail layer", category = "Merge", description = "Accumulate motion-compensated per-frame residuals into a detail layer injected at merge output; active on multi-frame upscales only, silent otherwise", min = 0, max = 1, step = 1, defaultValue = 1)
+    @Tunable(title = "SR detail layer", category = "Merge", description = "Accumulate motion-compensated per-frame residuals into a detail layer injected at merge output; active on multi-frame upscales and explicit 1x (enhanced native), silent otherwise", min = 0, max = 1, step = 1, defaultValue = 1)
     boolean srDetailEnable = true;
-    @Tunable(title = "SR detail strength", category = "Merge", description = "Gain applied to the normalized SR detail layer at merge output (0 keeps it allocated but inert)", min = 0.0f, max = 2.0f, step = 0.05f, defaultValue = 0.7f)
-    float srDetailStrength = 0.7f;
-    @Tunable(title = "SR detail clamp", category = "Merge", description = "Per-frame residual clamp in normalized units: consistent subpixel detail passes, motion saturates instead of ghosting", min = 0.005f, max = 0.5f, step = 0.005f, defaultValue = 0.03f)
-    float srDetailClamp = 0.03f;
+    @Tunable(title = "SR detail strength", category = "Merge", description = "Gain applied to the normalized SR detail layer at merge output (0 keeps it allocated but inert)", min = 0.0f, max = 2.0f, step = 0.05f, defaultValue = 0.9f)
+    float srDetailStrength = 0.9f;
+    @Tunable(title = "SR detail clamp", category = "Merge", description = "Per-frame residual clamp in normalized units: consistent subpixel detail passes, motion saturates instead of ghosting", min = 0.005f, max = 0.5f, step = 0.005f, defaultValue = 0.05f)
+    float srDetailClamp = 0.05f;
     @Tunable(title = "SR memory cap", category = "Merge", description = "Skip the detail layer when its two packed accumulators would exceed this many MB (covers sensors up to ~108MP at default)", min = 64, max = 1024, step = 64, defaultValue = 1024)
     int srMemoryCapMB = 1024;
     /** SR detail ping-pong accumulators (packed RGBA16F); null unless srActive. */
@@ -1265,10 +1265,12 @@ public class ESD4D extends GLOneScript {
 
         long mergeLoopT = System.currentTimeMillis();
         int alterSlot = 0;
-        // 3a SR detail layer: motion-compensated residuals accumulate only on
-        // multi-frame upscales (factor > 1). Single frames, native/downscale
-        // sizes and over-budget sensors skip allocation entirely and render
-        // exactly as before (srGain 0 below).
+        // 3a SR detail layer: motion-compensated residuals accumulate on
+        // multi-frame upscales and on explicit 1.0x (enhanced native:
+        // detail without resizing; Disabled stays the untouched legacy
+        // path). Single frames, native/downscale sizes and over-budget
+        // sensors skip allocation entirely and render exactly as before
+        // (srGain 0 below).
         srActive = false;
         srAccA = null;
         srAccB = null;
@@ -1277,7 +1279,8 @@ public class ESD4D extends GLOneScript {
         try {
             float srFactor = parameters != null ? parameters.getActiveUpscaleFactor() : 0f;
             boolean wantSR = srDetailEnable && images != null && images.size() > 1
-                    && srFactor > 1.0f + 1e-4f && packedSize != null
+                    && !com.particlesdevs.photoncamera.processing.render.Parameters.isResizeDisabled(srFactor)
+                    && packedSize != null
                     && packedSize.x > 0 && packedSize.y > 0;
             if (wantSR) {
                 long needBytes = 2L * (long) packedSize.x * (long) packedSize.y * 4L * 2L;
