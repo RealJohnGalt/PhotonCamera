@@ -522,6 +522,17 @@ public class PostPipeline extends GLBasePipeline {
     /** Result of the single-frame KernelNet inference; null until/unless it completes successfully. */
     public java.util.concurrent.atomic.AtomicReference<com.particlesdevs.photoncamera.processing.ml.KernelNetResult> kernelNetSingleResult =
             new java.util.concurrent.atomic.AtomicReference<>();
+    /** SR detail highpass map (packed RGBA16F halves) exported by ESD4D; consumed by {@link SRDetailApply}. */
+    public java.nio.ShortBuffer srDetail;
+    /** Size of {@link #srDetail} (packed domain). */
+    public android.graphics.Point srDetailSize;
+    /**
+     * Base direct buffer behind {@link #srDetail}; freed explicitly after
+     * the GPU upload, mirroring the KernelNet params ferry.
+     */
+    public java.nio.ByteBuffer srDetailBase;
+    /** Packing shift matching {@link #srDetail} (ferried from the merge); may be null. */
+    public android.graphics.Point srDetailShift;
 
     /** Called from Initial/ModernInitial/LinearExposure (first pass) to keep the linear scene. */
     public void captureDemosaicLinear(GLTexture tex) {
@@ -1499,6 +1510,15 @@ public class PostPipeline extends GLBasePipeline {
         }
         kernelParams = null;
         kernelParamsSize = null;
+        // Same safety net for the SR detail ferry (SRDetailApply frees it
+        // once uploaded or ignored).
+        if (srDetailBase != null) {
+            Allocator.free(srDetailBase);
+            srDetailBase = null;
+        }
+        srDetail = null;
+        srDetailSize = null;
+        srDetailShift = null;
         super.close();
     }
 
@@ -1642,6 +1662,10 @@ public class PostPipeline extends GLBasePipeline {
         // Local contrast and sharpening further down still run at output
         // resolution like any other shot.
         add(new UpscaleCrop());
+        // SR detail top-up while still linear: the merge-stage layer survives
+        // the upscale kernel here instead of being smoothed by it (null-ferry
+        // passthrough when inactive).
+        add(new SRDetailApply());
         if ("off".equals(tonePipeline)) {
             // No tone/color stage: the linear camera RGB passes through
             // untouched. LinearExposure draws nothing but keeps the Ultra HDR

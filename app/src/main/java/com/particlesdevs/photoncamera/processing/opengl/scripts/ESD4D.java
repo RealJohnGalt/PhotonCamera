@@ -330,6 +330,16 @@ public class ESD4D extends GLOneScript {
     GLTexture srAccB;
     /** Accumulator holding the final SR detail sum (one of the above). */
     GLTexture srAccFinal;
+    /** Normalized SR detail highpass (packed RGBA16F); bound by merge2o, exported for post. */
+    GLTexture srHP;
+    /** SR detail highpass for post-upscale application (packed RGBA16F halves); may be null. */
+    public ByteBuffer srDetailBase;
+    /** View of {@link #srDetailBase}; never freed (see kernelsMapCPU). */
+    public ShortBuffer srDetailCPU;
+    /** Size of {@link #srDetailCPU} (packed domain). */
+    public Point srDetailCPUSize;
+    /** Packing shift used for {@link #srDetailCPU} (copy of {@link #cfaShift}); may be null. */
+    public Point srDetailShift;
     /** Frames accumulated into {@link #srAccFinal} (normalization divisor). */
     int srAccumFrames;
     /** True once the SR accumulators are allocated for this shot. */
@@ -1478,6 +1488,61 @@ public class ESD4D extends GLOneScript {
         }
         Log.d("ESD4D", "Stage[merge-loop] elapsed:" + (System.currentTimeMillis() - mergeLoopT) + " ms");
 
+        // SR detail finalize: normalized highpass of the accumulator into
+        // srHP (bound by merge2o below and exported for the post-upscale
+        // apply node), then release the accumulators well before the output
+        // readback. Export failure only drops the post node; merge2o still
+        // applies the texture.
+        srHP = null;
+        if (srActive && srAccFinal != null && srAccumFrames > 0) {
+            try {
+                srHP = new GLTexture(packedSize, new GLFormat(GLFormat.DataType.FLOAT_16, 4), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
+                glProg.setLayout(tile, tile, 1);
+                glProg.useAssetProgram("merge/srhp", true);
+                glProg.setTextureCompute("srHpIn", srAccFinal, false);
+                glProg.setTextureCompute("srHpOut", srHP, true);
+                glProg.setVar("srNorm", 1.0f / srAccumFrames);
+                glProg.computeAuto(srHP.mSize, 1);
+                gpuSyncProfile();
+                srHP.BindBuffer();
+                ByteBuffer srRead = srHP.textureBufferHalfFloatNative();
+                if (srRead != null) {
+                    srRead.rewind();
+                    srDetailBase = srRead;
+                    srDetailCPU = srRead.asShortBuffer();
+                    srDetailCPUSize = new Point(packedSize);
+                    srDetailShift = cfaShift != null ? new Point(cfaShift) : null;
+                } else {
+                    Log.e("ESD4D", "SR detail export failed, post node will pass through");
+                }
+            } catch (Throwable t) {
+                Log.e("ESD4D", "SR detail finalize failed, disabled", t);
+                srActive = false;
+                if (srHP != null) {
+                    try {
+                        srHP.close();
+                    } catch (Exception ignored) {
+                    }
+                    srHP = null;
+                }
+            }
+        }
+        if (srAccA != null) {
+            try {
+                srAccA.close();
+            } catch (Exception ignored) {
+            }
+            srAccA = null;
+        }
+        if (srAccB != null) {
+            try {
+                srAccB.close();
+            } catch (Exception ignored) {
+            }
+            srAccB = null;
+        }
+        srAccFinal = null;
+
         // The merge result stays normalized fp16 end-to-end: merge2o unpacks
         // the packed quads straight into the R16F output buffer (no uint16
         // re-encode); PostPipeline consumes it as-is and the uint16 DNG save
@@ -1500,11 +1565,12 @@ public class ESD4D extends GLOneScript {
         glProg.setVar("cfaShift", cfaShift); // uniform: GLProg clears defines after each load
         glProg.setTexture("inTexture",base);
         glProg.setTexture("alignmentTexture", alignmentTex);
-        // SR detail: normalized gain (strength/frames, 0 when inactive) and
-        // the final accumulator; falls back to base so the sampler always has
-        // a binding (untouched while the gain is 0).
-        GLTexture srBind = (srActive && srAccFinal != null) ? srAccFinal : base;
-        float srGain = (srActive && srAccumFrames > 0) ? srDetailStrength / srAccumFrames : 0f;
+        // SR detail: precomputed normalized highpass (srGain = strength;
+        // normalization lives in srhp), bound for merge2o and exported for
+        // post. Falls back to base so the sampler always has a binding
+        // (untouched while the gain is 0).
+        GLTexture srBind = (srActive && srHP != null) ? srHP : base;
+        float srGain = (srActive && srHP != null && srAccumFrames > 0) ? srDetailStrength : 0f;
         glProg.setVar("srGain", srGain);
         glProg.setTexture("srDetail", srBind);
         result.BufferLoad();
@@ -1634,6 +1700,10 @@ public class ESD4D extends GLOneScript {
             srAccB = null;
         }
         srAccFinal = null;
+        if (srHP != null) {
+            srHP.close();
+            srHP = null;
+        }
         if (alter != null) alter.close();
         if (inputBase != null) inputBase.close();
         if (baseDiff != null) baseDiff.close();

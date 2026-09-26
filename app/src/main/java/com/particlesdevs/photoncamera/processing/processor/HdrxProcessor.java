@@ -412,6 +412,17 @@ public class HdrxProcessor extends ProcessorBase {
             esd4d.kernelsMapCPUSize = null;
             esd4d.kernelsMapBase = null;
         }
+        pipeline.srDetail = esd4d != null ? esd4d.srDetailCPU : null;
+        pipeline.srDetailSize = esd4d != null ? esd4d.srDetailCPUSize : null;
+        pipeline.srDetailBase = esd4d != null ? esd4d.srDetailBase : null;
+        pipeline.srDetailShift = esd4d != null ? esd4d.srDetailShift : null;
+        if (esd4d != null) {
+            // Same handoff; SRDetailApply frees the pipeline side.
+            esd4d.srDetailCPU = null;
+            esd4d.srDetailCPUSize = null;
+            esd4d.srDetailBase = null;
+            esd4d.srDetailShift = null;
+        }
 
         Bitmap img = pipeline.Run(output, processingParameters);
         Allocator.logStage(TAG, "post-render");

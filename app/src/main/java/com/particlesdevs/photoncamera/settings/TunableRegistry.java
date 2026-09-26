@@ -27,6 +27,7 @@ public final class TunableRegistry {
         com.particlesdevs.photoncamera.processing.opengl.scripts.ESD4D.class,
         com.particlesdevs.photoncamera.processing.opengl.postpipeline.ABLC.class,
         com.particlesdevs.photoncamera.processing.opengl.postpipeline.UpscaleCrop.class,
+        com.particlesdevs.photoncamera.processing.opengl.postpipeline.SRDetailApply.class,
         com.particlesdevs.photoncamera.processing.opengl.postpipeline.KernelNetPrep.class,
         com.particlesdevs.photoncamera.processing.render.Parameters.class,
         com.particlesdevs.photoncamera.processing.ImageSaverSettings.class,

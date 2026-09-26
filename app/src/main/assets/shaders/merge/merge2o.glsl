@@ -7,10 +7,10 @@ uniform int yOffset;
 // clears its define list after every program load, so a CFAPATTERN define set
 // once at pipeline start would never reach this late-bound shader.
 uniform ivec2 cfaShift;
-// Signed SR detail accumulator (packed RGBA16F, same grid as inTexture) and
-// its normalized gain (detail strength / accumulated frames). Zero when the
-// layer is inactive (single frame, no upscale, over budget, or failure),
-// in which case the branch below is skipped and output is bit-identical.
+// Signed SR detail highpass (packed RGBA16F, precomputed by srhp with the
+// frame-count normalization folded in) and its gain. Zero when the layer is
+// inactive (single frame, no upscale, over budget, or failure), in which
+// case the branch below is skipped and output is bit-identical.
 uniform highp sampler2D srDetail;
 uniform float srGain;
 #define TILE 2
@@ -36,20 +36,9 @@ void main() {
     int ch = (rel.x & 1) + (rel.y & 1) * TILE;
     float det = 0.0;
     if (srGain > 0.0) {
-        // Detail highpass on the packed grid: center minus 3x3 box mean
-        // (~6x6 raw support, the band a 2x upscale can actually recover),
-        // normalized by the frame count folded into srGain. Edge-clamped
-        // fetches keep the border exact.
-        ivec2 ps = textureSize(srDetail, 0);
-        vec4 acc = vec4(0.0);
-        for (int j = -1; j <= 1; j++) {
-            for (int i = -1; i <= 1; i++) {
-                acc += texelFetch(srDetail, clamp(pq + ivec2(i, j), ivec2(0), ps - ivec2(1)), 0);
-            }
-        }
-        vec4 c = texelFetch(srDetail, clamp(pq, ivec2(0), ps - ivec2(1)), 0);
-        vec4 hp = (c - acc * (1.0 / 9.0)) * srGain;
-        det = hp[ch];
+        // Precomputed highpass sampled at this site's packed quad channel.
+        vec4 hp = texelFetch(srDetail, clamp(pq, ivec2(0), textureSize(srDetail, 0) - ivec2(1)), 0);
+        det = hp[ch] * srGain;
     }
     Output = clamp(bayer[ch] + det, 0.0, 1.0);
 }
