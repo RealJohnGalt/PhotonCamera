@@ -188,10 +188,10 @@ public class PostPipeline extends GLBasePipeline {
         category = "Upscale",
         min = 0.0f,
         max = 1.0f,
-        defaultValue = 0.4f,
+        defaultValue = 0.5f,
         step = 0.05f
     )
-    float upscaleSharpenScale = 0.4f;
+    float upscaleSharpenScale = 0.5f;
 
     @Tunable(
         title = "Tiled Compare Harness",
