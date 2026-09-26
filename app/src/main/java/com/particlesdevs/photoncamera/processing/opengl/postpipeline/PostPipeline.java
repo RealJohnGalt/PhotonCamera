@@ -184,7 +184,7 @@ public class PostPipeline extends GLBasePipeline {
 
     @Tunable(
         title = "Upscale sharpen scale",
-        description = "Scales Sharpen2 and CaptureSharpening strength for cropped (upscaled) captures; unsharp masks tuned for native detail overshoot on interpolated pixels, while the kernelnet reconstruction provides structure-aware acutance",
+        description = "Reference tail-sharpen scale applied at 2x upscale; smaller/larger upscales interpolate as scale*sqrt(2/zoom) (1.0 when not upscaled, clamped to [0.2, 1]). Unsharp masks tuned for native detail overshoot on interpolated pixels, while the kernelnet reconstruction provides structure-aware acutance",
         category = "Upscale",
         min = 0.0f,
         max = 1.0f,
@@ -192,6 +192,32 @@ public class PostPipeline extends GLBasePipeline {
         step = 0.05f
     )
     float upscaleSharpenScale = 0.5f;
+
+    /**
+     * Factor-aware tail-sharpen scale for CaptureSharpening/Sharpen2: 1.0
+     * when the shot was not upscaled (native or downscaled output), otherwise
+     * {@code upscaleSharpenScale * sqrt(2/zoomMax)} clamped to [0.2, 1], where
+     * zoomMax is the largest axis ratio of output (workSize) to pre-resize
+     * (cropSize) size. Replaces the old fixed scale on any cropped shot, so
+     * mild upscales keep more sharpening, extreme ones less, and explicit
+     * per-sensor upscales on uncropped shots are covered too.
+     */
+    public float tailSharpenScale() {
+        try {
+            if (cropSize == null || workSize == null) return 1.0f;
+            if (cropSize.x <= 0 || cropSize.y <= 0 || workSize.x <= 0 || workSize.y <= 0) return 1.0f;
+            float zx = workSize.x / (float) cropSize.x;
+            float zy = workSize.y / (float) cropSize.y;
+            float zm = Math.max(zx, zy);
+            if (zm <= 1.0f + 1e-4f) return 1.0f;
+            float s = upscaleSharpenScale * (float) Math.sqrt(2.0 / zm);
+            if (s > 1.0f) s = 1.0f;
+            if (s < 0.2f) s = 0.2f;
+            return s;
+        } catch (Exception ignored) {
+            return 1.0f;
+        }
+    }
 
     @Tunable(
         title = "Tiled Compare Harness",
