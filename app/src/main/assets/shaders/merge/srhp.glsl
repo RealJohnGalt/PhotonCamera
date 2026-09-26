@@ -32,5 +32,10 @@ void main() {
     vec4 c = imageLoad(srHpIn, coord);
     vec4 hp = (c - acc * (1.0 / 9.0)) * srNorm;
     vec4 gate = smoothstep(vec4(srT0), vec4(srT1), abs(hp));
-    imageStore(srHpOut, coord, hp * gate);
+    vec4 outv = hp * gate;
+    // Kill NaN/Inf at the source: a poisoned residual would otherwise ride
+    // every downstream consumer (merge2o, export, post) as black pixels.
+    bvec4 finite = lessThan(abs(outv), vec4(65504.0));
+    outv = mix(vec4(0.0), outv, vec4(finite));
+    imageStore(srHpOut, coord, outv);
 }

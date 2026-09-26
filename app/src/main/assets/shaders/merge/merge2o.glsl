@@ -38,7 +38,13 @@ void main() {
     if (srGain > 0.0) {
         // Precomputed highpass sampled at this site's packed quad channel.
         vec4 hp = texelFetch(srDetail, clamp(pq, ivec2(0), textureSize(srDetail, 0) - ivec2(1)), 0);
-        det = hp[ch] * srGain;
+        float d = hp[ch] * srGain;
+        // NaN sanitize (ES2 has no isnan; NaN fails every comparison and
+        // would render black) and never darken near-white: clipped white
+        // holds no recoverable dark detail.
+        if (!(d <= 0.0 || d >= 0.0)) d = 0.0;
+        if (bayer[ch] > 0.98 && d < 0.0) d = 0.0;
+        det = d;
     }
     Output = clamp(bayer[ch] + det, 0.0, 1.0);
 }
