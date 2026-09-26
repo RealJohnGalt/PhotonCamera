@@ -6,7 +6,12 @@ layout(rgba16f, binding = 1) writeonly uniform highp image2D srHpOut;
 
 // Normalization divisor (accumulated frame count); the merge2o and
 // post-upscale gains apply on top of this normalized highpass.
+// Noise coring thresholds (absolute, same units): magnitudes below srT0
+// are averaged-noise residue and die; above srT1 fully pass. Real edges
+// and text strokes carry coherent amplitude and survive.
 uniform float srNorm;
+uniform float srT0;
+uniform float srT1;
 
 #define LAYOUT //
 LAYOUT
@@ -25,5 +30,7 @@ void main() {
         }
     }
     vec4 c = imageLoad(srHpIn, coord);
-    imageStore(srHpOut, coord, (c - acc * (1.0 / 9.0)) * srNorm);
+    vec4 hp = (c - acc * (1.0 / 9.0)) * srNorm;
+    vec4 gate = smoothstep(vec4(srT0), vec4(srT1), abs(hp));
+    imageStore(srHpOut, coord, hp * gate);
 }

@@ -319,10 +319,14 @@ public class ESD4D extends GLOneScript {
     FlowNetAlignment flowNetAlignment;
     @Tunable(title = "SR detail layer", category = "Merge", description = "Accumulate motion-compensated per-frame residuals into a detail layer injected at merge output; active on multi-frame upscales and explicit 1x (enhanced native), silent otherwise", min = 0, max = 1, step = 1, defaultValue = 1)
     boolean srDetailEnable = true;
-    @Tunable(title = "SR detail strength", category = "Merge", description = "Gain applied to the normalized SR detail layer at merge output (0 keeps it allocated but inert)", min = 0.0f, max = 2.0f, step = 0.05f, defaultValue = 0.9f)
-    float srDetailStrength = 0.9f;
-    @Tunable(title = "SR detail clamp", category = "Merge", description = "Per-frame residual clamp in normalized units: consistent subpixel detail passes, motion saturates instead of ghosting", min = 0.005f, max = 0.5f, step = 0.005f, defaultValue = 0.05f)
-    float srDetailClamp = 0.05f;
+    @Tunable(title = "SR detail strength", category = "Merge", description = "Gain applied to the normalized SR detail layer at merge output (0 keeps it allocated but inert)", min = 0.0f, max = 2.0f, step = 0.05f, defaultValue = 0.6f)
+    float srDetailStrength = 0.6f;
+    @Tunable(title = "SR detail clamp", category = "Merge", description = "Per-frame residual clamp in normalized units: consistent subpixel detail passes, motion saturates instead of ghosting", min = 0.005f, max = 0.5f, step = 0.005f, defaultValue = 0.03f)
+    float srDetailClamp = 0.03f;
+    @Tunable(title = "SR coring low", category = "Merge", description = "Detail magnitudes below this (noise sigmas) are suppressed as averaged-noise residue", min = 0.0f, max = 5.0f, step = 0.1f, defaultValue = 1.0f)
+    float srCoring0 = 1.0f;
+    @Tunable(title = "SR coring high", category = "Merge", description = "Detail magnitudes above this (noise sigmas) fully pass; smooth ramp between low and high", min = 0.5f, max = 8.0f, step = 0.1f, defaultValue = 2.5f)
+    float srCoring1 = 2.5f;
     @Tunable(title = "SR memory cap", category = "Merge", description = "Skip the detail layer when its two packed accumulators would exceed this many MB (covers sensors up to ~108MP at default)", min = 64, max = 1024, step = 64, defaultValue = 1024)
     int srMemoryCapMB = 1024;
     /** SR detail ping-pong accumulators (packed RGBA16F); null unless srActive. */
@@ -1505,6 +1509,9 @@ public class ESD4D extends GLOneScript {
                 glProg.setTextureCompute("srHpIn", srAccFinal, false);
                 glProg.setTextureCompute("srHpOut", srHP, true);
                 glProg.setVar("srNorm", 1.0f / srAccumFrames);
+                float srT1 = Math.max(srCoring1 * kernelSigma, srCoring0 * kernelSigma + 1e-4f);
+                glProg.setVar("srT0", srCoring0 * kernelSigma);
+                glProg.setVar("srT1", srT1);
                 glProg.computeAuto(srHP.mSize, 1);
                 gpuSyncProfile();
                 srHP.BindBuffer();
