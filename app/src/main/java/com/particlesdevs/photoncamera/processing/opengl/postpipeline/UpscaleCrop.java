@@ -45,7 +45,7 @@ public final class UpscaleCrop extends Node {
     @Tunable(title = "KernelNet upscale abs min sigma", category = "Upscale", description = "Absolute floor on the reconstruction kernel sigma in crop pixels (numerical guard against tap-weight collapse)", min = 0.05f, max = 1.0f, step = 0.01f, defaultValue = 0.25f)
     float absMinPx;
 
-    @Tunable(title = "KernelNet upscale min sigma (output px)", category = "Upscale", description = "Additional sigma floor measured in output pixels - keeps the reconstruction equally crisp at every zoom factor (lower = sharper at extreme zoom)", min = 0.1f, max = 8.0f, step = 0.05f, defaultValue = 0.8f)
+    @Tunable(title = "KernelNet upscale min sigma (output px)", category = "Upscale", description = "Additional sigma floor measured in output pixels - keeps the reconstruction equally crisp at every zoom factor (lower = sharper at extreme zoom)", min = 0.1f, max = 8.0f, step = 0.05f, defaultValue = 0.65f)
     float outFloorPx;
 
     @Tunable(title = "KernelNet upscale max sigma", category = "Upscale", description = "Cap on the reconstruction kernel sigma in crop pixels (kept below radius/2 so the window rim never clips the kernel)", min = 0.5f, max = 6.0f, step = 0.1f, defaultValue = 1.0f)
