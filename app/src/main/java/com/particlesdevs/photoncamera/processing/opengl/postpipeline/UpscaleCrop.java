@@ -60,13 +60,13 @@ public final class UpscaleCrop extends Node {
     @Tunable(title = "KernelNet upscale max elongation", category = "Upscale", description = "Caps the sigma ratio max(s1,s2)/min(s1,s2) - prevents knife-thin edge kernels", min = 1.0f, max = 8.0f, step = 0.5f, defaultValue = 7.0f)
     float maxElong;
 
-    @Tunable(title = "KernelNet upscale gate curve", category = "Upscale", description = "Exponent reshaping the edge-confidence gate for the unsharp term (fraction of allowed elongation). Below 1 steepens so medium edges sharpen too; 1 is linear; flats stay near 0 either way", min = 0.1f, max = 2.0f, step = 0.05f, defaultValue = 0.6f)
+    @Tunable(title = "KernelNet upscale gate curve", category = "Upscale", description = "Exponent reshaping the edge-confidence gate for the unsharp term (fraction of allowed elongation). Below 1 steepens so medium edges sharpen too; 1 is linear; flats stay near 0 either way", min = 0.1f, max = 2.0f, step = 0.05f, defaultValue = 0.45f)
     float gateExp;
 
     @Tunable(title = "KernelNet split chroma", category = "Upscale", description = "Reconstruct luma with the anisotropic kernels and take chroma from bicubic (1) instead of filtering all channels anisotropically (0) - same detail, less color moire", min = 0, max = 1, step = 1, defaultValue = 1)
     int splitChroma;
 
-    @Tunable(title = "KernelNet upscale acutance", category = "Upscale", description = "Edge-aligned unsharp-mask amount: sharpened = aniso + amt*gate*(aniso - wider aniso), where gate is the used fraction of maxElong (0 in flats, 1 on strong edges); 0 keeps the output strictly convex", min = 0.0f, max = 1.5f, step = 0.05f, defaultValue = 0.9f)
+    @Tunable(title = "KernelNet upscale acutance", category = "Upscale", description = "Edge-aligned unsharp-mask amount: sharpened = aniso + amt*gate*(aniso - wider aniso), where gate is the used fraction of maxElong (0 in flats, 1 on strong edges); 0 keeps the output strictly convex", min = 0.0f, max = 1.5f, step = 0.05f, defaultValue = 1.1f)
     float sharpAmt;
 
     @Tunable(title = "KernelNet upscale acutance width", category = "Upscale", description = "Sigma multiplier of the wide pass used by the unsharp term (higher = softer wide pass, stronger bandpass). Effective value is capped at radius/(2*sigmaMax) so the wide kernel fits the window", min = 1.1f, max = 4.0f, step = 0.05f, defaultValue = 2.2f)
@@ -100,7 +100,7 @@ public final class UpscaleCrop extends Node {
     private float anisoMinY = 0f;
     private float anisoSigmaMaxEff = 1.0f;
     private int anisoRadiusEff = 5;
-    private float anisoSharpAmtEff = 0.9f;
+    private float anisoSharpAmtEff = 1.1f;
 
     public UpscaleCrop() {
         super("", "UpscaleCrop");

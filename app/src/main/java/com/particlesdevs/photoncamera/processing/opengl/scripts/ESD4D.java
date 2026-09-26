@@ -319,8 +319,8 @@ public class ESD4D extends GLOneScript {
     FlowNetAlignment flowNetAlignment;
     @Tunable(title = "SR detail layer", category = "Merge", description = "Accumulate motion-compensated per-frame residuals into a detail layer injected at merge output; active on multi-frame upscales only, silent otherwise", min = 0, max = 1, step = 1, defaultValue = 1)
     boolean srDetailEnable = true;
-    @Tunable(title = "SR detail strength", category = "Merge", description = "Gain applied to the normalized SR detail layer at merge output (0 keeps it allocated but inert)", min = 0.0f, max = 2.0f, step = 0.05f, defaultValue = 0.5f)
-    float srDetailStrength = 0.5f;
+    @Tunable(title = "SR detail strength", category = "Merge", description = "Gain applied to the normalized SR detail layer at merge output (0 keeps it allocated but inert)", min = 0.0f, max = 2.0f, step = 0.05f, defaultValue = 0.7f)
+    float srDetailStrength = 0.7f;
     @Tunable(title = "SR detail clamp", category = "Merge", description = "Per-frame residual clamp in normalized units: consistent subpixel detail passes, motion saturates instead of ghosting", min = 0.005f, max = 0.5f, step = 0.005f, defaultValue = 0.03f)
     float srDetailClamp = 0.03f;
     @Tunable(title = "SR memory cap", category = "Merge", description = "Skip the detail layer when its two packed accumulators would exceed this many MB (covers sensors up to ~108MP at default)", min = 64, max = 1024, step = 64, defaultValue = 1024)
