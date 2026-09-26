@@ -20,6 +20,7 @@ uniform float sharpWide;
 uniform float maxElong;
 uniform float gateExp;
 uniform vec2 scaleRatio;
+uniform int splitChroma;
 uniform int kernelRadius;
 uniform int debugMode;
 out vec4 Output;
@@ -145,5 +146,15 @@ void main() {
         sharp = aniso + (sharpAmt * gate) * (aniso - wide);
     }
     vec4 bic = textureBicubicHardware(InputBuffer, uvWin);
-    Output = mix(bic, sharp, clamp(strength, 0.0, 1.0));
+    vec4 base = mix(bic, sharp, clamp(strength, 0.0, 1.0));
+    if (splitChroma != 0) {
+        // Luma from the guided reconstruction, chroma from bicubic: chroma
+        // planes are smooth, so the full 121-tap anisotropic filter buys
+        // nothing there and only risks color moire; keeping bicubic chroma
+        // also frees headroom for stronger luma acutance.
+        float yBase = lum709(base.rgb);
+        float yBic = lum709(bic.rgb);
+        base.rgb = vec3(yBase) + (bic.rgb - vec3(yBic));
+    }
+    Output = base;
 }

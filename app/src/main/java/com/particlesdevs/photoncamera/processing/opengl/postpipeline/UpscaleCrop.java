@@ -63,6 +63,9 @@ public final class UpscaleCrop extends Node {
     @Tunable(title = "KernelNet upscale gate curve", category = "Upscale", description = "Exponent reshaping the edge-confidence gate for the unsharp term (fraction of allowed elongation). Below 1 steepens so medium edges sharpen too; 1 is linear; flats stay near 0 either way", min = 0.1f, max = 2.0f, step = 0.05f, defaultValue = 0.6f)
     float gateExp;
 
+    @Tunable(title = "KernelNet split chroma", category = "Upscale", description = "Reconstruct luma with the anisotropic kernels and take chroma from bicubic (1) instead of filtering all channels anisotropically (0) - same detail, less color moire", min = 0, max = 1, step = 1, defaultValue = 1)
+    int splitChroma;
+
     @Tunable(title = "KernelNet upscale acutance", category = "Upscale", description = "Edge-aligned unsharp-mask amount: sharpened = aniso + amt*gate*(aniso - wider aniso), where gate is the used fraction of maxElong (0 in flats, 1 on strong edges); 0 keeps the output strictly convex", min = 0.0f, max = 1.5f, step = 0.05f, defaultValue = 0.9f)
     float sharpAmt;
 
@@ -422,6 +425,7 @@ public final class UpscaleCrop extends Node {
         glProg.setVar("sharpWide", sharpWide);
         glProg.setVar("maxElong", maxElong);
         glProg.setVar("gateExp", gateExp);
+        glProg.setVar("splitChroma", splitChroma);
         glProg.setVar("debugMode", debugUpscale);
         glProg.setTexture("InputBuffer", input);
         glProg.setTexture("KernelsMap", kernelsMapTex);
