@@ -151,9 +151,10 @@ void main() {
         // Luma from the guided reconstruction, chroma from bicubic: chroma
         // planes are smooth, so the full 121-tap anisotropic filter buys
         // nothing there and only risks color moire; keeping bicubic chroma
-        // also frees headroom for stronger luma acutance.
-        float yBase = lum709(base.rgb);
-        float yBic = lum709(bic.rgb);
+        // also frees headroom for stronger luma acutance. (No lum709 macro in
+        // this shader, so the Rec.709 dot is spelled out.)
+        float yBase = dot(base.rgb, vec3(0.2126, 0.7152, 0.0722));
+        float yBic = dot(bic.rgb, vec3(0.2126, 0.7152, 0.0722));
         base.rgb = vec3(yBase) + (bic.rgb - vec3(yBic));
     }
     Output = base;
