@@ -317,6 +317,23 @@ public class ESD4D extends GLOneScript {
     private long halideLaunchMs;
     /** Dense optical-flow alignment (FlowNet); non-null when useNcnnFlow ran. */
     FlowNetAlignment flowNetAlignment;
+    @Tunable(title = "SR detail layer", category = "Merge", description = "Accumulate motion-compensated per-frame residuals into a detail layer injected at merge output; active on multi-frame upscales only, silent otherwise", min = 0, max = 1, step = 1, defaultValue = 1)
+    boolean srDetailEnable = true;
+    @Tunable(title = "SR detail strength", category = "Merge", description = "Gain applied to the normalized SR detail layer at merge output (0 keeps it allocated but inert)", min = 0.0f, max = 2.0f, step = 0.05f, defaultValue = 0.5f)
+    float srDetailStrength = 0.5f;
+    @Tunable(title = "SR detail clamp", category = "Merge", description = "Per-frame residual clamp in normalized units: consistent subpixel detail passes, motion saturates instead of ghosting", min = 0.005f, max = 0.5f, step = 0.005f, defaultValue = 0.03f)
+    float srDetailClamp = 0.03f;
+    @Tunable(title = "SR memory cap", category = "Merge", description = "Skip the detail layer when its two packed accumulators would exceed this many MB", min = 64, max = 1024, step = 64, defaultValue = 384)
+    int srMemoryCapMB = 384;
+    /** SR detail ping-pong accumulators (packed RGBA16F); null unless srActive. */
+    GLTexture srAccA;
+    GLTexture srAccB;
+    /** Accumulator holding the final SR detail sum (one of the above). */
+    GLTexture srAccFinal;
+    /** Frames accumulated into {@link #srAccFinal} (normalization divisor). */
+    int srAccumFrames;
+    /** True once the SR accumulators are allocated for this shot. */
+    boolean srActive;
     @Tunable(title = "HotPixels detect threshold", category = "Merge", description = "Higher multiplier detects less hotpixels", min = 0.5f, max = 5.0f, step = 0.1f, defaultValue = 1.5f)
     double detectThr;
 
@@ -1238,6 +1255,51 @@ public class ESD4D extends GLOneScript {
 
         long mergeLoopT = System.currentTimeMillis();
         int alterSlot = 0;
+        // 3a SR detail layer: motion-compensated residuals accumulate only on
+        // multi-frame upscales (factor > 1). Single frames, native/downscale
+        // sizes and over-budget sensors skip allocation entirely and render
+        // exactly as before (srGain 0 below).
+        srActive = false;
+        srAccA = null;
+        srAccB = null;
+        srAccFinal = null;
+        srAccumFrames = 0;
+        try {
+            float srFactor = parameters != null ? parameters.getActiveUpscaleFactor() : 0f;
+            boolean wantSR = srDetailEnable && images != null && images.size() > 1
+                    && srFactor > 1.0f + 1e-4f && packedSize != null
+                    && packedSize.x > 0 && packedSize.y > 0;
+            if (wantSR) {
+                long needBytes = 2L * (long) packedSize.x * (long) packedSize.y * 4L * 2L;
+                if (needBytes <= (long) srMemoryCapMB * 1024L * 1024L) {
+                    srAccA = new GLTexture(packedSize, new GLFormat(GLFormat.DataType.FLOAT_16, 4), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
+                    srAccB = new GLTexture(packedSize, new GLFormat(GLFormat.DataType.FLOAT_16, 4), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
+                    srActive = true;
+                    Log.d("ESD4D", "SR detail active: " + packedSize.x + "x" + packedSize.y
+                            + " packed accum x2, factor=" + srFactor);
+                } else {
+                    Log.d("ESD4D", "SR detail skipped: need " + (needBytes / 1048576)
+                            + "MB over cap " + srMemoryCapMB + "MB");
+                }
+            }
+        } catch (Throwable t) {
+            Log.e("ESD4D", "SR detail setup failed, disabled", t);
+            srActive = false;
+            if (srAccA != null) {
+                try {
+                    srAccA.close();
+                } catch (Exception ignored) {
+                }
+                srAccA = null;
+            }
+            if (srAccB != null) {
+                try {
+                    srAccB.close();
+                } catch (Exception ignored) {
+                }
+                srAccB = null;
+            }
+        }
         for (int f = 0; f < images.size(); f++) {
             startT();
             if(f == minExpIdx) continue;
@@ -1322,6 +1384,31 @@ public class ESD4D extends GLOneScript {
             glProg.computeAuto(baseDiff.mSize, 1);
             gpuSyncProfile();
             Log.d("ESD4D", "Stage[merge:mergeAlign] elapsed:" + (System.currentTimeMillis() - stageT) + " ms f=" + f);
+
+            // SR detail: fold this frame's motion-compensated residual into
+            // the ping-pong accumulator (dispatched before the kernelnet join
+            // below so GPU work overlaps the CPU wait). baseDiff is fresh
+            // here; combine only reads it. Any failure disables the layer and
+            // the shot continues exactly as without it.
+            if (srActive && srAccA != null && srAccB != null && baseDiff != null) {
+                try {
+                    GLTexture srIn = (srAccumFrames % 2 == 0) ? srAccA : srAccB;
+                    GLTexture srOut = (srAccumFrames % 2 == 0) ? srAccB : srAccA;
+                    glProg.setLayout(tile, tile, 1);
+                    glProg.useAssetProgram("merge/sradd", true);
+                    glProg.setTextureCompute("srAccIn", srIn, false);
+                    glProg.setTextureCompute("srDiffIn", baseDiff, false);
+                    glProg.setTextureCompute("srAccOut", srOut, true);
+                    glProg.setVar("srClamp", srDetailClamp);
+                    glProg.setVar("srFirst", srAccumFrames == 0 ? 1 : 0);
+                    glProg.computeAuto(srOut.mSize, 1);
+                    srAccFinal = srOut;
+                    srAccumFrames++;
+                } catch (Throwable t) {
+                    Log.e("ESD4D", "SR accum failed, disabling", t);
+                    srActive = false;
+                }
+            }
 
             if (PhotonCamera.DEBUG)
                 Log.d("ESD4D", "create diff");
@@ -1413,6 +1500,13 @@ public class ESD4D extends GLOneScript {
         glProg.setVar("cfaShift", cfaShift); // uniform: GLProg clears defines after each load
         glProg.setTexture("inTexture",base);
         glProg.setTexture("alignmentTexture", alignmentTex);
+        // SR detail: normalized gain (strength/frames, 0 when inactive) and
+        // the final accumulator; falls back to base so the sampler always has
+        // a binding (untouched while the gain is 0).
+        GLTexture srBind = (srActive && srAccFinal != null) ? srAccFinal : base;
+        float srGain = (srActive && srAccumFrames > 0) ? srDetailStrength / srAccumFrames : 0f;
+        glProg.setVar("srGain", srGain);
+        glProg.setTexture("srDetail", srBind);
         result.BufferLoad();
         // Issue every block's draw + readback into the PBO ring, then tear
         // down CPU-side resources (AfterRun) while the transfers are in
@@ -1531,6 +1625,15 @@ public class ESD4D extends GLOneScript {
         if (inputAlter != null) inputAlter.close();
         if (inputAlterAlt != null) inputAlterAlt.close();
         deleteUploadFences(alterUploadFences);
+        if (srAccA != null) {
+            srAccA.close();
+            srAccA = null;
+        }
+        if (srAccB != null) {
+            srAccB.close();
+            srAccB = null;
+        }
+        srAccFinal = null;
         if (alter != null) alter.close();
         if (inputBase != null) inputBase.close();
         if (baseDiff != null) baseDiff.close();
