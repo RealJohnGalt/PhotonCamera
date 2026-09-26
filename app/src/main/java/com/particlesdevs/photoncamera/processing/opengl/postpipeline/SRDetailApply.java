@@ -28,7 +28,7 @@ import static android.opengl.GLES20.GL_LINEAR;
  */
 public final class SRDetailApply extends Node {
 
-    @Tunable(title = "SR post-upscale detail", category = "Upscale", description = "Gain of the post-upscale SR detail top-up (base injection in merge2o stays on its own strength)", min = 0.0f, max = 2.0f, step = 0.05f, defaultValue = 0.5f)
+    @Tunable(title = "SR post-upscale detail", category = "Upscale", description = "Gain of the post-upscale SR detail top-up (base injection in merge2o stays on its own strength)", min = 0.0f, max = 2.0f, step = 0.05f, defaultValue = 0.8f)
     float srPostStrength;
 
     private GLTexture detailTex;

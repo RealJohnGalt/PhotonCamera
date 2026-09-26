@@ -187,20 +187,21 @@ public class PostPipeline extends GLBasePipeline {
         description = "Reference tail-sharpen scale applied at 2x upscale; smaller/larger upscales interpolate as scale*sqrt(2/zoom) (1.0 when not upscaled, clamped to [0.2, 1]). Unsharp masks tuned for native detail overshoot on interpolated pixels, while the kernelnet reconstruction provides structure-aware acutance",
         category = "Upscale",
         min = 0.0f,
-        max = 1.0f,
-        defaultValue = 0.85f,
+        max = 1.25f,
+        defaultValue = 1.0f,
         step = 0.05f
     )
-    float upscaleSharpenScale = 0.85f;
+    float upscaleSharpenScale = 1.0f;
 
     /**
      * Factor-aware tail-sharpen scale for CaptureSharpening/Sharpen2: 1.0
      * when the shot was not upscaled (native or downscaled output), otherwise
      * {@code upscaleSharpenScale * sqrt(2/zoomMax)} clamped to [0.2, 1], where
      * zoomMax is the largest axis ratio of output (workSize) to pre-resize
-     * (cropSize) size. Replaces the old fixed scale on any cropped shot, so
-     * mild upscales keep more sharpening, extreme ones less, and explicit
-     * per-sensor upscales on uncropped shots are covered too.
+     * (cropSize) size. Mild upscales may exceed native strength slightly to
+     * reach MTF parity (clamped to 1.25); extreme ones still fall off toward
+     * 0.2, and explicit per-sensor upscales on uncropped shots are covered
+     * too.
      */
     public float tailSharpenScale() {
         try {
@@ -211,7 +212,7 @@ public class PostPipeline extends GLBasePipeline {
             float zm = Math.max(zx, zy);
             if (zm <= 1.0f + 1e-4f) return 1.0f;
             float s = upscaleSharpenScale * (float) Math.sqrt(2.0 / zm);
-            if (s > 1.0f) s = 1.0f;
+            if (s > 1.25f) s = 1.25f;
             if (s < 0.2f) s = 0.2f;
             return s;
         } catch (Exception ignored) {

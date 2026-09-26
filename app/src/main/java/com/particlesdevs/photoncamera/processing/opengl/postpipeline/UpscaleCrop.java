@@ -45,7 +45,7 @@ public final class UpscaleCrop extends Node {
     @Tunable(title = "KernelNet upscale abs min sigma", category = "Upscale", description = "Absolute floor on the reconstruction kernel sigma in crop pixels (numerical guard against tap-weight collapse)", min = 0.05f, max = 1.0f, step = 0.01f, defaultValue = 0.25f)
     float absMinPx;
 
-    @Tunable(title = "KernelNet upscale min sigma (output px)", category = "Upscale", description = "Additional sigma floor measured in output pixels - keeps the reconstruction equally crisp at every zoom factor (lower = sharper at extreme zoom)", min = 0.1f, max = 8.0f, step = 0.05f, defaultValue = 1.0f)
+    @Tunable(title = "KernelNet upscale min sigma (output px)", category = "Upscale", description = "Additional sigma floor measured in output pixels - keeps the reconstruction equally crisp at every zoom factor (lower = sharper at extreme zoom)", min = 0.1f, max = 8.0f, step = 0.05f, defaultValue = 0.9f)
     float outFloorPx;
 
     @Tunable(title = "KernelNet upscale max sigma", category = "Upscale", description = "Cap on the reconstruction kernel sigma in crop pixels (kept below radius/2 so the window rim never clips the kernel)", min = 0.5f, max = 6.0f, step = 0.1f, defaultValue = 1.0f)
@@ -60,13 +60,13 @@ public final class UpscaleCrop extends Node {
     @Tunable(title = "KernelNet upscale max elongation", category = "Upscale", description = "Caps the sigma ratio max(s1,s2)/min(s1,s2) - prevents knife-thin edge kernels", min = 1.0f, max = 8.0f, step = 0.5f, defaultValue = 7.0f)
     float maxElong;
 
-    @Tunable(title = "KernelNet upscale gate curve", category = "Upscale", description = "Exponent reshaping the edge-confidence gate for the unsharp term (fraction of allowed elongation). Below 1 steepens so medium edges sharpen too; 1 is linear; flats stay near 0 either way", min = 0.1f, max = 2.0f, step = 0.05f, defaultValue = 0.45f)
+    @Tunable(title = "KernelNet upscale gate curve", category = "Upscale", description = "Exponent reshaping the edge-confidence gate for the unsharp term (fraction of allowed elongation). Below 1 steepens so medium edges sharpen too; 1 is linear; flats stay near 0 either way", min = 0.1f, max = 2.0f, step = 0.05f, defaultValue = 0.35f)
     float gateExp;
 
     @Tunable(title = "KernelNet split chroma", category = "Upscale", description = "Reconstruct luma with the anisotropic kernels and take chroma from bicubic (1) instead of filtering all channels anisotropically (0) - same detail, less color moire", min = 0, max = 1, step = 1, defaultValue = 1)
     int splitChroma;
 
-    @Tunable(title = "KernelNet upscale acutance", category = "Upscale", description = "Edge-aligned unsharp-mask amount: sharpened = aniso + amt*gate*(aniso - wider aniso), where gate is the used fraction of maxElong (0 in flats, 1 on strong edges); 0 keeps the output strictly convex", min = 0.0f, max = 1.5f, step = 0.05f, defaultValue = 1.1f)
+    @Tunable(title = "KernelNet upscale acutance", category = "Upscale", description = "Edge-aligned unsharp-mask amount: sharpened = aniso + amt*gate*(aniso - wider aniso), where gate is the used fraction of maxElong (0 in flats, 1 on strong edges); 0 keeps the output strictly convex", min = 0.0f, max = 1.5f, step = 0.05f, defaultValue = 1.3f)
     float sharpAmt;
 
     @Tunable(title = "KernelNet upscale acutance width", category = "Upscale", description = "Sigma multiplier of the wide pass used by the unsharp term (higher = softer wide pass, stronger bandpass). Effective value is capped at radius/(2*sigmaMax) so the wide kernel fits the window", min = 1.1f, max = 4.0f, step = 0.05f, defaultValue = 2.2f)
@@ -100,7 +100,7 @@ public final class UpscaleCrop extends Node {
     private float anisoMinY = 0f;
     private float anisoSigmaMaxEff = 1.0f;
     private int anisoRadiusEff = 5;
-    private float anisoSharpAmtEff = 1.1f;
+    private float anisoSharpAmtEff = 1.3f;
 
     public UpscaleCrop() {
         super("", "UpscaleCrop");
