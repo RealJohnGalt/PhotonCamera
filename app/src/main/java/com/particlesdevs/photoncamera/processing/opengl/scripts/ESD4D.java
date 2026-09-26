@@ -323,8 +323,8 @@ public class ESD4D extends GLOneScript {
     float srDetailStrength = 0.5f;
     @Tunable(title = "SR detail clamp", category = "Merge", description = "Per-frame residual clamp in normalized units: consistent subpixel detail passes, motion saturates instead of ghosting", min = 0.005f, max = 0.5f, step = 0.005f, defaultValue = 0.03f)
     float srDetailClamp = 0.03f;
-    @Tunable(title = "SR memory cap", category = "Merge", description = "Skip the detail layer when its two packed accumulators would exceed this many MB", min = 64, max = 1024, step = 64, defaultValue = 384)
-    int srMemoryCapMB = 384;
+    @Tunable(title = "SR memory cap", category = "Merge", description = "Skip the detail layer when its two packed accumulators would exceed this many MB (covers sensors up to ~108MP at default)", min = 64, max = 1024, step = 64, defaultValue = 1024)
+    int srMemoryCapMB = 1024;
     /** SR detail ping-pong accumulators (packed RGBA16F); null unless srActive. */
     GLTexture srAccA;
     GLTexture srAccB;
