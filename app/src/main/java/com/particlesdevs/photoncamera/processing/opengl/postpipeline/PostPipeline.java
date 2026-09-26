@@ -188,10 +188,10 @@ public class PostPipeline extends GLBasePipeline {
         category = "Upscale",
         min = 0.0f,
         max = 1.0f,
-        defaultValue = 0.5f,
+        defaultValue = 0.7f,
         step = 0.05f
     )
-    float upscaleSharpenScale = 0.5f;
+    float upscaleSharpenScale = 0.7f;
 
     /**
      * Factor-aware tail-sharpen scale for CaptureSharpening/Sharpen2: 1.0
