@@ -9,6 +9,10 @@ uniform highp usampler2D srAccum;
 uniform sampler2D InputBuffer;
 // Tiled rendering origin (output coords of this tile's row 0).
 uniform ivec2 u_tileOrigin;
+// Input window origin (output coords of the InputBuffer texture's row 0).
+// The head driver feeds band-sized input windows; (0,0) when the input is
+// the full frame. The accumulator stays in absolute output coordinates.
+uniform ivec2 u_inOrigin;
 // Weight of the injected high band (0 = pure aniso).
 uniform float srBlend;
 // Local noise model (post domain) and the detail scale. The injected band
@@ -28,11 +32,12 @@ out vec4 Output;
 
 void main() {
     ivec2 o = ivec2(gl_FragCoord.xy) + u_tileOrigin;
+    ivec2 oIn = o - u_inOrigin;
     ivec2 sz = textureSize(srAccum, 0);
     ivec2 cmax = sz - ivec2(1);
     vec2 c = unpackHalf2x16(texelFetch(srAccum, clamp(o, ivec2(0), cmax), 0).x);
     float yFused = c.x / max(c.y, 1e-3);
-    vec4 refT = texelFetch(InputBuffer, clamp(o, ivec2(0), textureSize(InputBuffer, 0) - ivec2(1)), 0);
+    vec4 refT = texelFetch(InputBuffer, clamp(oIn, ivec2(0), textureSize(InputBuffer, 0) - ivec2(1)), 0);
     vec3 ref = refT.rgb;
     float yRef = dot(ref, vec3(0.2126, 0.7152, 0.0722));
     // The GPU handoff skips the merge's CPU sanity scan, so sanitize here:
@@ -92,7 +97,7 @@ void main() {
             vec2 s = unpackHalf2x16(texelFetch(srAccum, clamp(o + ivec2(i, j), ivec2(0), cmax), 0).x);
             lpF += wgt * max((s.x / max(s.y, 1e-3) - bLuma) / denom, 0.0);
             vec3 r = texelFetch(InputBuffer,
-                    clamp(o + ivec2(i, j), ivec2(0), textureSize(InputBuffer, 0) - ivec2(1)), 0).rgb;
+                    clamp(oIn + ivec2(i, j), ivec2(0), textureSize(InputBuffer, 0) - ivec2(1)), 0).rgb;
             lpR += wgt * dot(r, vec3(0.2126, 0.7152, 0.0722));
         }
     }

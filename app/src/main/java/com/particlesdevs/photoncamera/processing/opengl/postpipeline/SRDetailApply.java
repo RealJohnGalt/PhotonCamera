@@ -67,9 +67,44 @@ public final class SRDetailApply extends Node {
         pp.srDetailTexID = 0;
     }
 
+    // Program bound by prepare() for the head driver's per-band phase switch.
+    int tileProgram = 0;
+    // Frozen band-body uniforms (set in prepare, re-issued by renderTile).
+    private float rawPerOutX, rawPerOutY, srOx, srOy;
+    private int srCfaX, srCfaY;
+
     @Override
     public void Run() {
         GLTexture input = previousNode.WorkingTexture;
+        PostPipeline pp = (PostPipeline) basePipeline;
+        if (pp.headFused) {
+            // Head produce already streamed this node's bands into the head
+            // output main (see TileDriver.runHeadProduce).
+            WorkingTexture = input;
+            glProg.closed = true;
+            return;
+        }
+        if (!prepare(input != null ? input.mSize : null)) {
+            return; // passthrough; prepare set WorkingTexture
+        }
+        renderTile(input, tileActive() ? tileOut : basePipeline.getMain(), 0,
+                tileActive() ? tileY0 : 0);
+        glProg.closed = true;
+    }
+
+    /**
+     * One-time setup shared by the legacy Run and the head driver: adopts or
+     * uploads the detail map, binds the program (capturing {@link #tileProgram})
+     * and freezes the band-body uniforms. {@code outSize} is the full output
+     * size the raw-per-output ratio is measured against - the driver calls
+     * this before any band exists, so it cannot read it off the input.
+     * Returns false when the node passes through, with WorkingTexture already
+     * set to the input. Idempotent: a second call reuses the detail texture.
+     */
+    boolean prepare(Point outSize) {
+        if (detailTex != null) {
+            return true;
+        }
         PostPipeline pp = (PostPipeline) basePipeline;
         ShortBuffer params = pp.srDetail;
         Point paramsSize = pp.srDetailSize;
@@ -77,9 +112,10 @@ public final class SRDetailApply extends Node {
         int sharedDetail = pp.srDetailTexID;
         Parameters p = basePipeline.mParameters;
 
-        boolean ok = input != null && paramsSize != null
+        boolean ok = outSize != null && outSize.x > 0 && outSize.y > 0
+                && paramsSize != null
                 && (sharedDetail != 0 || (params != null && ownedBase != null))
-                && paramsSize.x > 0 && paramsSize.y > 0 && input.mSize.x > 0 && input.mSize.y > 0
+                && paramsSize.x > 0 && paramsSize.y > 0
                 && srPostStrength > 0f && p != null && p.rawSize != null
                 && p.rawSize.x > 0 && p.rawSize.y > 0
                 // Full-SR path replaces this content downstream: stand down
@@ -87,8 +123,8 @@ public final class SRDetailApply extends Node {
                 && pp.srFullCPU == null && pp.srFullTexID == 0;
         if (!ok) {
             releaseFerry(pp);
-            WorkingTexture = input;
-            return;
+            WorkingTexture = previousNode.WorkingTexture;
+            return false;
         }
 
         // Full-frame raw domain reference: cropped shots map through the
@@ -98,20 +134,20 @@ public final class SRDetailApply extends Node {
                 ? p.fullRawSize.x : p.rawSize.x;
         float fullH = (p.isCropped && p.fullRawSize != null && p.fullRawSize.y > 0)
                 ? p.fullRawSize.y : p.rawSize.y;
-        float ox = (p.isCropped && p.cropOrigin != null) ? p.cropOrigin.x : 0f;
-        float oy = (p.isCropped && p.cropOrigin != null) ? p.cropOrigin.y : 0f;
+        srOx = (p.isCropped && p.cropOrigin != null) ? p.cropOrigin.x : 0f;
+        srOy = (p.isCropped && p.cropOrigin != null) ? p.cropOrigin.y : 0f;
         // Output spans the full frame (zoom expand) or the raw buffer, so
-        // raw-per-output is the full size over the input size. Rotation is
+        // raw-per-output is the full size over the output size. Rotation is
         // handled downstream; both domains here are unrotated.
-        float rawPerOutX = fullW / input.mSize.x;
-        float rawPerOutY = fullH / input.mSize.y;
+        rawPerOutX = fullW / outSize.x;
+        rawPerOutY = fullH / outSize.y;
 
         if (sharedDetail != 0) {
             if (!android.opengl.GLES30.glIsTexture(sharedDetail)) {
                 Log.e(Name, "SR detail: shared map " + sharedDetail + " invisible, passing through");
                 releaseFerry(pp);
-                WorkingTexture = input;
-                return;
+                WorkingTexture = previousNode.WorkingTexture;
+                return false;
             }
             // Shared-group handoff: adopt the merge's detail texture; no
             // upload, no ferry. closeAll()/AfterRun delete it here.
@@ -131,8 +167,8 @@ public final class SRDetailApply extends Node {
                 }
                 detailTex = null;
                 releaseFerry(pp);
-                WorkingTexture = input;
-                return;
+                WorkingTexture = previousNode.WorkingTexture;
+                return false;
             }
         }
         // CPU copy served (now on GPU): release so it doesn't ride the render.
@@ -141,26 +177,38 @@ public final class SRDetailApply extends Node {
         pp.srDetail = null;
         pp.srDetailSize = null;
 
-        // Packed-texel bounds of the base domain, for the shader's edge clamp
-        // reference only (sampling itself clamps to the map).
-        glProg.useAssetProgram("srdetail/apply");
-        glProg.setTexture("InputBuffer", input);
-        glProg.setTexture("DetailMap", detailTex);
-        glProg.setVar("srRawPerOut", rawPerOutX, rawPerOutY);
-        glProg.setVar("srOrigin", ox, oy);
         // Exact packing shift from the merge that built the map (never
         // re-derived: quad/mono layouts share the same ferry contract).
         android.graphics.Point shift = pp.srDetailShift;
-        if (shift != null) {
-            glProg.setVar("srCfa", shift.x, shift.y);
-        } else {
-            glProg.setVar("srCfa", 0, 0);
-        }
+        srCfaX = shift != null ? shift.x : 0;
+        srCfaY = shift != null ? shift.y : 0;
+
+        // Packed-texel bounds of the base domain, for the shader's edge clamp
+        // reference only (sampling itself clamps to the map).
+        glProg.useAssetProgram("srdetail/apply");
+        tileProgram = glProg.mCurrentProgramActive;
+        return true;
+    }
+
+    /**
+     * Band body shared by the legacy Run and the head driver: rebinds the
+     * program, re-issues every uniform/texture (a rebind clears unit
+     * assignments) and draws the output band. {@code inOriginY} is the
+     * absolute output row the input texture's row 0 maps to;
+     * {@code outOriginY} the same for the draw target.
+     */
+    void renderTile(GLTexture inTile, GLTexture outTile, int inOriginY, int outOriginY) {
+        glProg.rebindProgram(tileProgram);
+        glProg.setTexture("InputBuffer", inTile);
+        glProg.setTexture("DetailMap", detailTex);
+        glProg.setVar("srRawPerOut", rawPerOutX, rawPerOutY);
+        glProg.setVar("srOrigin", srOx, srOy);
+        glProg.setVar("srCfa", srCfaX, srCfaY);
         glProg.setVar("srStrength", srPostStrength);
-        glProg.setVar("u_tileOrigin", 0, tileActive() ? tileY0 : 0);
-        WorkingTexture = tileActive() ? tileOut : basePipeline.getMain();
-        glProg.drawBlocks(WorkingTexture);
-        glProg.closed = true;
+        glProg.setVar("u_inOrigin", 0, inOriginY);
+        glProg.setVar("u_tileOrigin", 0, outOriginY);
+        WorkingTexture = outTile;
+        glProg.drawBlocks(outTile);
     }
 
     @Override

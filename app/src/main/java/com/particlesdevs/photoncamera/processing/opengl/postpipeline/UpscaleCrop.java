@@ -101,12 +101,18 @@ public final class UpscaleCrop extends Node {
     private boolean anisoDone = false;
     private Point anisoTarget = null;
     private float anisoZoomX = 1f;
-    private float anisoZoomY = 1f;
+    // Package visibility: the head driver's window math reads this.
+    float anisoZoomY = 1f;
     private float anisoMinX = 0f;
     private float anisoMinY = 0f;
     private float anisoSigmaMaxEff = 1.0f;
     private int anisoRadiusEff = 5;
     private float anisoSharpAmtEff = 1.4f;
+    // Program bound by the aniso branch for the head driver's per-band phase
+    // switch, and the SR kernel trim captured while its ferry was still live
+    // (the driver's resolve prepare releases it before the aniso bands run).
+    int tileProgram = 0;
+    private float anisoTrim = 1.0f;
 
     public UpscaleCrop() {
         super("", "UpscaleCrop");
@@ -412,6 +418,7 @@ public final class UpscaleCrop extends Node {
             }
 
             glProg.useAssetProgram("upscalecrop/anisoupscale");
+            tileProgram = glProg.mCurrentProgramActive;
             anisoDone = true;
             anisoTarget = target;
             anisoZoomX = zoomX;
@@ -421,11 +428,42 @@ public final class UpscaleCrop extends Node {
             anisoSigmaMaxEff = sigmaMaxEff;
             anisoRadiusEff = radiusEff;
             anisoSharpAmtEff = sharpAmtEff;
-            rebindAniso(input, input, 0, 0);
-            glProg.drawBlocks(out);
+            // Kernel trim captured while the SR ferry is still live: the head
+            // driver's resolve prepare releases it before the aniso bands run.
+            anisoTrim = srKernelTrim();
+            boolean headFused = false;
+            if (headEnabled(pp)) {
+                SRDetailApply da = null;
+                SRResolve res = null;
+                int self = pp.Nodes.indexOf(this);
+                for (int k = self + 1; k < pp.Nodes.size(); k++) {
+                    Node n = pp.Nodes.get(k);
+                    if (n instanceof SRDetailApply) {
+                        da = (SRDetailApply) n;
+                    } else if (n instanceof SRResolve) {
+                        res = (SRResolve) n;
+                    }
+                    if (da != null && res != null) {
+                        break;
+                    }
+                }
+                try {
+                    headFused = TileDriver.runHeadProduce(this, da, res, input, out);
+                } catch (Throwable t) {
+                    Log.e("TiledHarness", "head produce failed, legacy fallback", t);
+                    headFused = false;
+                }
+            }
+            if (headFused) {
+                Log.d("TiledHarness", "head produce engaged " + target.x + "x" + target.y);
+            } else {
+                rebindAniso(input, input, 0, 0);
+                glProg.drawBlocks(out);
+            }
             glProg.closed = true;
             WorkingTexture = out;
-            if (((PostPipeline) basePipeline).debugTiledCompare) {
+            pp.headFused = headFused;
+            if (!headFused && ((PostPipeline) basePipeline).debugTiledCompare) {
                 verifyAnisoRegions(input);
             }
         } else {
@@ -487,7 +525,7 @@ public final class UpscaleCrop extends Node {
     private void rebindAniso(GLTexture fullIn, GLTexture input, int o0, int wy0) {
         glProg.setVar("fullSize", anisoTarget);
         glProg.setVar("scaleRatio", 1.0f / anisoZoomX, 1.0f / anisoZoomY);
-        glProg.setVar("sigmaScale", sigmaScale * srKernelTrim());
+        glProg.setVar("sigmaScale", sigmaScale * anisoTrim);
         glProg.setVar("sigmaMinPx", anisoMinX, anisoMinY);
         glProg.setVar("sigmaMaxPx", anisoSigmaMaxEff);
         glProg.setVar("strength", anisoStrength);
@@ -504,6 +542,28 @@ public final class UpscaleCrop extends Node {
         glProg.setVar("u_tileOrigin", 0, o0);
         glProg.setVar("u_winOrigin", 0, wy0);
         glProg.setVar("u_winFullSize", (float) fullIn.mSize.x, (float) fullIn.mSize.y);
+    }
+
+    /**
+     * Head-driver band body: rebinds (the driver alternates the aniso, detail
+     * and resolve programs per band), re-issues the whole aniso bind and
+     * draws output rows [outOriginY, outOriginY + out.mSize.y). {@code inTile}
+     * holds the crop window starting at crop row {@code winOriginY}.
+     */
+    boolean renderAnisoTile(GLTexture fullIn, GLTexture inTile, GLTexture out,
+                            int outOriginY, int winOriginY) {
+        if (!anisoDone || kernelsMapTex == null || inTile == null || out == null) {
+            return false;
+        }
+        glProg.rebindProgram(tileProgram);
+        rebindAniso(fullIn, inTile, outOriginY, winOriginY);
+        glProg.drawBlocks(out);
+        return true;
+    }
+
+    /** Head produce engages only outside the oracle harness. */
+    private boolean headEnabled(PostPipeline pp) {
+        return pp.tiledHeadProduce && !pp.debugTiledCompare;
     }
 
     /**

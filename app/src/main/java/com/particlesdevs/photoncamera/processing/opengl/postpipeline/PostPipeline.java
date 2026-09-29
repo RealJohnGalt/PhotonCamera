@@ -312,6 +312,14 @@ public class PostPipeline extends GLBasePipeline {
     @Tunable(title = "Tiled fused Laplacian tail", category = "Post", description = "Fuse the LocalLaplacian's finest reconstruction into the tiled tail: while the pyramid is alive, its bands stream straight into the sink instead of materializing a full output/entry (~1.15 GB at a 144 MP output). Bit-exact by construction (the Laplacian's finest oracle); falls back to the legacy full-frame path on any failure or non-row rotation", min = 0, max = 1, step = 1, defaultValue = 1)
     boolean tiledFuseLaplacian = true;
 
+    @Tunable(title = "Tiled head production", category = "Post", description = "Stream the crop->aniso->SR detail->SR resolve head segment in bands straight into one output-sized main, so the output-sized ping-pong mains never coexist with the crop input and the SR accumulator (at a 144 MP output: 2.9 GB -> ~1.9 GB off the post's LMK peak). Bit-exact per stage contract; falls back to the legacy full-frame chain on any failure", min = 0, max = 1, step = 1, defaultValue = 1)
+    boolean tiledHeadProduce = true;
+
+    // Head-produce flag: set only by the segment driver after every band
+    // streamed into the head output main. The SR nodes early-return on it.
+    // Assigned every shot (never stale); only the driver sets it.
+    boolean headFused = false;
+
     // T4 engage flag, computed once per shot below: true only when the proven
     // segment will actually render (capture active, correcting passthrough).
     // Assigned every shot (never stale); nodes read it, only the fallback
@@ -438,6 +446,7 @@ public class PostPipeline extends GLBasePipeline {
         tailFusedSink = false;
         sinkBitmap = null;
         srResolved = false;
+        headFused = false;
         mSettings = PhotonCamera.getSettings();
         Point rawSliced = parameters.rawSize;
         cropSize = new Point(parameters.rawSize);

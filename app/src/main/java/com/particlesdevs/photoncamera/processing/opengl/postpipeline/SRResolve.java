@@ -77,9 +77,47 @@ public final class SRResolve extends Node {
         pp.srFullTexID = 0;
     }
 
+    // Program bound by prepare() for the head driver's per-band phase switch.
+    int tileProgram = 0;
+    // Frozen band-body uniforms (set in prepare, re-issued by renderTile).
+    private float srNoiseSVal, srNoiseOVal;
+    private float[] srBlackVal;
+
     @Override
     public void Run() {
         GLTexture input = previousNode.WorkingTexture;
+        PostPipeline pp = (PostPipeline) basePipeline;
+        if (pp.headFused) {
+            // Head produce already streamed this node's bands into the head
+            // output main (see TileDriver.runHeadProduce).
+            WorkingTexture = input;
+            glProg.closed = true;
+            return;
+        }
+        if (!prepare(input != null ? input.mSize : null)) {
+            return; // passthrough; prepare set WorkingTexture
+        }
+        renderTile(input, tileActive() ? tileOut : basePipeline.getMain(), 0,
+                tileActive() ? tileY0 : 0);
+        glProg.closed = true;
+        if (!tileActive()) {
+            finish();
+        }
+    }
+
+    /**
+     * One-time setup shared by the legacy Run and the head driver: adopts or
+     * uploads the drizzle accumulator and binds the program (capturing
+     * {@link #tileProgram}). {@code outSize} is the reference's full size -
+     * the driver calls this before any band exists, so it cannot read it off
+     * the input. Returns false when the node passes through, with
+     * WorkingTexture already set to the input. Idempotent: a second call
+     * reuses the adopted accumulator.
+     */
+    boolean prepare(Point outSize) {
+        if (accumTex != null) {
+            return true;
+        }
         PostPipeline pp = (PostPipeline) basePipeline;
         ShortBuffer acc = pp.srFullCPU;
         Point accSize = pp.srFullSize;
@@ -88,25 +126,26 @@ public final class SRResolve extends Node {
 
         // The aniso input is the color/level reference: without it (or without
         // the drizzle) there is nothing to resolve.
-        boolean ok = input != null && accSize != null
+        boolean ok = outSize != null && outSize.x > 0 && outSize.y > 0
+                && accSize != null
                 && accSize.x > 0 && accSize.y > 0
                 && (sharedAcc != 0 || (acc != null && ownedBase != null));
         if (!ok) {
             Log.d(Name, "SR resolve passthrough: acc=" + (acc != null)
                     + " shared=" + sharedAcc
                     + " size=" + accSize + " base=" + (ownedBase != null)
-                    + " input=" + (input != null));
+                    + " out=" + outSize);
             releaseFerry(pp);
-            WorkingTexture = input;
-            return;
+            WorkingTexture = previousNode.WorkingTexture;
+            return false;
         }
         if (sharedAcc != 0 && !android.opengl.GLES30.glIsTexture(sharedAcc)) {
             // The shared name is not visible here (the EGL group silently fell
             // back to unshared): skip the SR rather than read garbage.
             Log.e(Name, "SR resolve: shared accumulator " + sharedAcc + " invisible, skipping");
             releaseFerry(pp);
-            WorkingTexture = input;
-            return;
+            WorkingTexture = previousNode.WorkingTexture;
+            return false;
         }
 
         if (sharedAcc != 0) {
@@ -124,8 +163,8 @@ public final class SRResolve extends Node {
                 Log.e(Name, "SR accum upload failed, passing through", t);
                 releaseFerry(pp);
                 closeTextures();
-                WorkingTexture = input;
-                return;
+                WorkingTexture = previousNode.WorkingTexture;
+                return false;
             }
         }
         // CPU copies served (now on GPU): release so they don't ride the render.
@@ -133,35 +172,52 @@ public final class SRResolve extends Node {
         Log.d(Name, "SR resolve active: " + accSize.x + "x" + accSize.y);
 
         glProg.useAssetProgram("srresolve/normalize");
-        glProg.setTexture("srAccum", accumTex);
-        glProg.setTexture("InputBuffer", input);
-        glProg.setVar("u_tileOrigin", 0, tileActive() ? tileY0 : 0);
-        glProg.setVar("srBlend", srResolveBlend);
+        tileProgram = glProg.mCurrentProgramActive;
         // Pre-inflation model: the fused luma's noise does not scale with the
         // denoise slider, so the shrinkage threshold must not either.
-        float nS = pp.noiseS0 > 0f ? pp.noiseS0 : basePipeline.noiseS;
-        float nO = pp.noiseO0 > 0f ? pp.noiseO0 : basePipeline.noiseO;
-        glProg.setVar("srNoiseS", nS);
-        glProg.setVar("srNoiseO", nO);
+        srNoiseSVal = pp.noiseS0 > 0f ? pp.noiseS0 : basePipeline.noiseS;
+        srNoiseOVal = pp.noiseO0 > 0f ? pp.noiseO0 : basePipeline.noiseO;
+        float[] ablc = pp.ablcBlack;
+        srBlackVal = ablc != null && ablc.length >= 3
+                ? new float[]{ablc[0], ablc[1], ablc[2]}
+                : new float[]{0f, 0f, 0f};
+        return true;
+    }
+
+    /**
+     * Band body shared by the legacy Run and the head driver: rebinds the
+     * program, re-issues every uniform/texture (a rebind clears unit
+     * assignments) and draws the output band. {@code inOriginY} is the
+     * absolute output row the input texture's row 0 maps to; the
+     * accumulator stays in absolute output coordinates.
+     */
+    void renderTile(GLTexture inTile, GLTexture outTile, int inOriginY, int outOriginY) {
+        glProg.rebindProgram(tileProgram);
+        glProg.setTexture("srAccum", accumTex);
+        glProg.setTexture("InputBuffer", inTile);
+        glProg.setVar("srBlend", srResolveBlend);
+        glProg.setVar("srNoiseS", srNoiseSVal);
+        glProg.setVar("srNoiseO", srNoiseOVal);
         glProg.setVar("srDetail", srResolveDetail);
         glProg.setVar("srAcutance", srResolveAcutance);
-        float[] ablc = pp.ablcBlack;
-        glProg.setVar("srBlack", ablc != null && ablc.length >= 3
-                ? new float[]{ablc[0], ablc[1], ablc[2]}
-                : new float[]{0f, 0f, 0f});
-        WorkingTexture = tileActive() ? tileOut : basePipeline.getMain();
-        glProg.drawBlocks(WorkingTexture);
-        glProg.closed = true;
+        glProg.setVar("srBlack", srBlackVal);
+        glProg.setVar("u_inOrigin", 0, inOriginY);
+        glProg.setVar("u_tileOrigin", 0, outOriginY);
+        WorkingTexture = outTile;
+        glProg.drawBlocks(outTile);
+    }
+
+    /**
+     * Releases the accumulator after its last reader. The legacy full-frame
+     * path calls this after its single draw; the head driver calls it after
+     * the last band. Kept off the per-band path: every band reads the
+     * accumulator, so only the final draw may drop it (0.4-0.6 GB at 64 MP
+     * upscales would otherwise ride the tone/Laplacian/tail peak).
+     */
+    void finish() {
+        PostPipeline pp = (PostPipeline) basePipeline;
         pp.srResolved = true;
-        // The accumulator feeds this draw alone. Release it here instead of at
-        // closeAll so the tone/Laplacian/tail stages don't carry its
-        // full-frame bytes (0.4-0.6 GB at 64 MP upscales) through the peak -
-        // the Laplacian's pyramid stage is where the OOM lands. Tiled runs
-        // execute this node once per band, so only the full-frame path may
-        // drop it (a band would need the accumulator for every other band).
-        if (!tileActive()) {
-            closeTextures();
-        }
+        closeTextures();
     }
 
     private void closeTextures() {

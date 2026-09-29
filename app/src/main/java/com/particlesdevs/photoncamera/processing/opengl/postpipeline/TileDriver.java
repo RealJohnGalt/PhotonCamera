@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Set;
 
 import static android.opengl.GLES20.GL_CLAMP_TO_EDGE;
+import static android.opengl.GLES20.GL_LINEAR;
 import static android.opengl.GLES20.GL_NEAREST;
 import static android.opengl.GLES31.GL_ALL_BARRIER_BITS;
 import static android.opengl.GLES31.glMemoryBarrier;
@@ -685,6 +686,9 @@ public final class TileDriver {
      * so wide bands minimize recompute; 512 also divides every target cleanly. */
     public static final int TAIL_TILE_ROWS = 512;
 
+    /** Output-row band height of the head produce (same scale as the tail). */
+    public static final int HEAD_TILE_ROWS = 512;
+
     /**
      * T4 tail driver, shared by the A/B proof and production: tiles the proven
      * segment (CaptureSharpening when active, then Sharpen2) in TAIL_TILE_ROWS
@@ -1097,6 +1101,109 @@ public final class TileDriver {
          * origin in both cases; the driver closes it.
          */
         GLTexture produce(int w0, int w1, boolean columns);
+    }
+
+    /**
+     * Head-segment produce: streams the crop -> aniso -> SR detail -> SR
+     * resolve chain in output-row bands straight into one output-sized
+     * texture, so the two output-sized mains the legacy chain ping-pongs
+     * through never coexist with the crop input and the SR accumulator -
+     * the post's >100 MP LMK peak (at a 144 MP output: 2.31 GB of mains plus
+     * the 0.58 GB accumulator, versus one output texture and band
+     * scratches).
+     *
+     * <p>Every stage is origin-aware: the aniso reads its halo-expanded crop
+     * window through {@code u_winOrigin} (oracle-proven), the detail and
+     * resolve stages read their band-sized input window through
+     * {@code u_inOrigin} while the detail map and the accumulator stay in
+     * absolute output coordinates. Each stage's halo contract sizes the
+     * previous stage's window, so the final bands are bit-exact.</p>
+     *
+     * <p>The detail stage may stand down (the full-SR drizzle replaces it);
+     * the resolve then reads the aniso bands directly. Returns true when the
+     * segment was produced; false when the resolve is inactive or a node
+     * declined, and the caller falls back to the legacy full-frame chain.</p>
+     */
+    public static boolean runHeadProduce(UpscaleCrop up, SRDetailApply da, SRResolve res,
+                                         GLTexture cropIn, GLTexture out) {
+        if (up == null || res == null || cropIn == null || out == null
+                || cropIn.mSize == null || out.mSize == null
+                || cropIn.mSize.x <= 0 || out.mSize.x <= 0 || out.mSize.y <= 0) {
+            Log.d("TiledHarness", "head produce declined: segment/size missing up=" + (up != null)
+                    + " res=" + (res != null) + " in=" + (cropIn != null) + " out=" + (out != null));
+            return false;
+        }
+        int outW = out.mSize.x;
+        int outH = out.mSize.y;
+        int inH = cropIn.mSize.y;
+        int hUp = Math.max(1, up.halo()) + 1;
+        // The detail stage may stand down (full-SR drizzle replaces it): the
+        // resolve then reads the aniso bands directly.
+        boolean daActive = da != null && da.prepare(out.mSize);
+        if (!res.prepare(out.mSize)) {
+            Log.d("TiledHarness", "head produce declined: resolve inactive");
+            return false;
+        }
+        int hDa = daActive ? da.halo() : 0;
+        int hRes = res.halo();
+        int bands = 0;
+        for (int[] band : computeBands(outH, HEAD_TILE_ROWS)) {
+            int o0 = band[0], o1 = band[1];
+            // Resolve input window (its reference stencil), then the detail
+            // input window (its halo) - the aniso renders the final window.
+            int rd0 = Math.max(0, o0 - hRes), rd1 = Math.min(outH, o1 + hRes);
+            int ad0 = Math.max(0, rd0 - hDa), ad1 = Math.min(outH, rd1 + hDa);
+            int[] win = inputWindow(ad0, ad1, inH, up.anisoZoomY, hUp);
+            int wy0 = win[0], wy1 = win[1];
+            GLTexture inTile = null, anisoTile = null, detailTile = null, resTile = null;
+            try {
+                // Input window tile must be GL_LINEAR: the aniso shader
+                // samples it through texture()/bicubic, so it has to filter
+                // exactly like the full crop texture it replaces.
+                inTile = new GLTexture(new Point(cropIn.mSize.x, wy1 - wy0),
+                        new GLFormat(cropIn.mFormat), null, GL_LINEAR, GL_CLAMP_TO_EDGE);
+                blitBand(cropIn, inTile, wy0, wy1 - wy0);
+                anisoTile = newTile(outW, ad1 - ad0, out.mFormat);
+                if (!up.renderAnisoTile(cropIn, inTile, anisoTile, ad0, wy0)) {
+                    throw new IllegalStateException("head produce: aniso declined");
+                }
+                inTile.close();
+                inTile = null;
+                GLTexture resIn = anisoTile;
+                int resInOrigin = ad0;
+                if (daActive) {
+                    detailTile = newTile(outW, rd1 - rd0, out.mFormat);
+                    da.renderTile(anisoTile, detailTile, ad0, rd0);
+                    anisoTile.close();
+                    anisoTile = null;
+                    resIn = detailTile;
+                    resInOrigin = rd0;
+                }
+                resTile = newTile(outW, o1 - o0, out.mFormat);
+                res.renderTile(resIn, resTile, resInOrigin, o0);
+                if (detailTile != null) {
+                    detailTile.close();
+                    detailTile = null;
+                }
+                if (anisoTile != null) {
+                    anisoTile.close();
+                    anisoTile = null;
+                }
+                blitBand(resTile, out, 0, o1 - o0, o0);
+                resTile.close();
+                resTile = null;
+                bands++;
+            } finally {
+                if (inTile != null) inTile.close();
+                if (anisoTile != null) anisoTile.close();
+                if (detailTile != null) detailTile.close();
+                if (resTile != null) resTile.close();
+            }
+        }
+        res.finish();
+        Log.d("TiledHarness", "head produce bands=" + bands + " out=" + outW + "x" + outH
+                + " in=" + cropIn.mSize.x + "x" + inH + " detail=" + daActive);
+        return bands > 0;
     }
 
     /**

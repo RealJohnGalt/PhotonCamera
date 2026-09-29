@@ -12,12 +12,18 @@ uniform float srStrength;
 // Tiled rendering origin (output coords of this tile's row 0). (0,0) on the
 // legacy path: identical.
 uniform ivec2 u_tileOrigin;
+// Input window origin (output coords of the input texture's row 0). The
+// head driver feeds band-sized input windows; (0,0) when the input is the
+// full frame. Only InputBuffer reads are window-relative: the detail map
+// lives in absolute output coordinates.
+uniform ivec2 u_inOrigin;
 out vec4 Output;
 
 void main() {
     ivec2 o = ivec2(gl_FragCoord.xy) + u_tileOrigin;
+    ivec2 oIn = o - u_inOrigin;
     ivec2 inSize = textureSize(InputBuffer, 0);
-    vec4 s = texelFetch(InputBuffer, clamp(o, ivec2(0), inSize - ivec2(1)), 0);
+    vec4 s = texelFetch(InputBuffer, clamp(oIn, ivec2(0), inSize - ivec2(1)), 0);
     // Crop-relative raw site, then the merge00 packing convention shared
     // with merge2o: packed coord AND channel index both key off (raw +
     // cfaShift). Raw parity alone misassigns quad channels on non-RGGB
