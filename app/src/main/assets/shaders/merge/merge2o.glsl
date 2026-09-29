@@ -7,6 +7,12 @@ uniform int yOffset;
 // clears its define list after every program load, so a CFAPATTERN define set
 // once at pipeline start would never reach this late-bound shader.
 uniform ivec2 cfaShift;
+// Signed SR detail highpass (packed RGBA16F, precomputed by srhp with the
+// frame-count normalization folded in) and its gain. Zero when the layer is
+// inactive (single frame, no upscale, over budget, or failure), in which
+// case the branch below is skipped and output is bit-identical.
+uniform highp sampler2D srDetail;
+uniform float srGain;
 #define TILE 2
 #define CONCAT 1
 out float Output;
@@ -25,6 +31,20 @@ void main() {
     // rel < cfaShift and rel > rawSize-1 and are simply never read here;
     // cfaShift is zero for RGGB/BGGR, so this is the identity for them).
     ivec2 rel = xy + cfaShift;
-    vec4 bayer = texelFetch(inTexture, rel / TILE, 0);
-    Output = clamp(bayer[(rel.x & 1) + (rel.y & 1) * TILE], 0.0, 1.0);
+    ivec2 pq = rel / TILE;
+    vec4 bayer = texelFetch(inTexture, pq, 0);
+    int ch = (rel.x & 1) + (rel.y & 1) * TILE;
+    float det = 0.0;
+    if (srGain > 0.0) {
+        // Precomputed highpass sampled at this site's packed quad channel.
+        vec4 hp = texelFetch(srDetail, clamp(pq, ivec2(0), textureSize(srDetail, 0) - ivec2(1)), 0);
+        float d = hp[ch] * srGain;
+        // NaN sanitize (ES2 has no isnan; NaN fails every comparison and
+        // would render black) and never darken near-white: clipped white
+        // holds no recoverable dark detail.
+        if (!(d <= 0.0 || d >= 0.0)) d = 0.0;
+        if (bayer[ch] > 0.98 && d < 0.0) d = 0.0;
+        det = d;
+    }
+    Output = clamp(bayer[ch] + det, 0.0, 1.0);
 }

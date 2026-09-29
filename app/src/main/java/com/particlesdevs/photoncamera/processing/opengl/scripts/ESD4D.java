@@ -12,6 +12,7 @@ import com.particlesdevs.photoncamera.util.Log;
 
 import com.particlesdevs.photoncamera.app.PhotonCamera;
 import com.particlesdevs.photoncamera.processing.ImageFrame;
+import com.particlesdevs.photoncamera.processing.opengl.GLContext;
 import com.particlesdevs.photoncamera.processing.opengl.GLCoreBlockProcessing;
 import com.particlesdevs.photoncamera.processing.opengl.GLDrawParams;
 import com.particlesdevs.photoncamera.processing.opengl.GLFormat;
@@ -317,6 +318,271 @@ public class ESD4D extends GLOneScript {
     private long halideLaunchMs;
     /** Dense optical-flow alignment (FlowNet); non-null when useNcnnFlow ran. */
     FlowNetAlignment flowNetAlignment;
+    @Tunable(title = "SR detail layer", category = "Merge", description = "Accumulate motion-compensated per-frame residuals into a detail layer injected at merge output; active on multi-frame upscales and explicit 1x (enhanced native), silent otherwise", min = 0, max = 1, step = 1, defaultValue = 1)
+    boolean srDetailEnable = true;
+    @Tunable(title = "SR detail strength", category = "Merge", description = "Gain applied to the normalized SR detail layer at merge output (0 keeps it allocated but inert)", min = 0.0f, max = 2.0f, step = 0.05f, defaultValue = 0.6f)
+    float srDetailStrength = 0.6f;
+    @Tunable(title = "SR detail clamp", category = "Merge", description = "Per-frame residual clamp in normalized units: consistent subpixel detail passes, motion saturates instead of ghosting", min = 0.005f, max = 0.5f, step = 0.005f, defaultValue = 0.03f)
+    float srDetailClamp = 0.03f;
+    @Tunable(title = "SR coring low", category = "Merge", description = "Detail magnitudes below this (noise sigmas) are suppressed as averaged-noise residue. Lowered from 1.0: the enhanced-native 1x output read as more denoised but not more detailed than Disabled, because the fine low-amplitude detail that carries that impression sat entirely below the 1-sigma knee; grain is acceptable in this pipeline, so the knee opens to 0.5", min = 0.0f, max = 5.0f, step = 0.1f, defaultValue = 0.5f)
+    float srCoring0 = 0.5f;
+    @Tunable(title = "SR coring high", category = "Merge", description = "Detail magnitudes above this (noise sigmas) fully pass; smooth ramp between low and high. Lowered from 2.5 with the knee: the full-pass point now sits just above the noise floor instead of 2.5 sigma", min = 0.5f, max = 8.0f, step = 0.1f, defaultValue = 1.5f)
+    float srCoring1 = 1.5f;
+    @Tunable(title = "SR memory cap", category = "Merge", description = "Skip the SR paths when their extra GPU/ferry memory would exceed this many MB (the detail layer's packed accumulators, or the full drizzle's two output-size accumulators plus the luma texture)", min = 64, max = 8192, step = 64, defaultValue = 2048)
+    int srMemoryCapMB = 2048;
+    @Tunable(title = "SR max expansion", category = "Merge", description = "Largest output/raw expansion (zoom x upscale factor) the SR paths run at. The fused luma's honest band ends at the raw Nyquist (0.5/expand c/px), so it leaves the eye's sensitive range around 4x while its magnified raw grain keeps growing - past that the aniso reconstruction is the better default. Raise to test high zoom crops; the memory gate still applies (small crops fit easily)", min = 1.0f, max = 20.0f, step = 0.25f, defaultValue = 4.0f)
+    float srMaxExpand = 4.0f;
+    @Tunable(title = "Full SR drizzle", category = "Merge", description = "Drizzle burst frames onto the output grid (translation + local block motion); replaces merge/inference limits on multi-frame upscales, silent otherwise", min = 0, max = 1, step = 1, defaultValue = 1)
+    boolean srFullEnable = true;
+    @Tunable(title = "SR trust floor", category = "Merge", description = "Minimum drizzle weight for an alter frame that disagrees coherently with the running estimate (ghost guard; 1 = pure average). Now 0: the drizzle fully compensates sub-pixel motion, unlike the merge's integer warp plus spatial blend, so a residual misregistration of ~1px directly blurs the fusion - and a 0.15 floor let those frames contribute 55% of the weight. Simulated at a +-1px residual: floor 0.15 -> fused band 0.819, injected 0.698; floor 0 -> 1.509 and 0.981, i.e. the sharp base frame wins. Set >0 only if you see ghosting from moving subjects", min = 0.0f, max = 1.0f, step = 0.05f, defaultValue = 0.0f)
+    float srTrustFloor = 0.0f;
+    @Tunable(title = "SR trust band", category = "Merge", description = "Low-frequency misregistration residual (normalized units; four sigma of the pre-inflation noise model widens it) at which an alter frame's drizzle weight halves", min = 0.005f, max = 0.2f, step = 0.005f, defaultValue = 0.05f)
+    float srTrustBand = 0.05f;
+    @Tunable(title = "SR clip attenuation", category = "Merge", description = "Weight attenuation for samples at the raw ceiling (0 = ignore clipping, 1 = clipped samples do not vote): burst frames clip at different levels and a clipped sample carries no highlight detail", min = 0.0f, max = 1.0f, step = 0.05f, defaultValue = 0.7f)
+    float srClipAtten = 0.7f;
+    @Tunable(title = "SR alignment refinement", category = "Merge", description = "Bounded per-cell Lucas-Kanade sub-pixel refinement of the drizzle motion against the running base (0 = off): the fusion's sampling positions are only as good as the alignment", min = 0.0f, max = 1.0f, step = 0.05f, defaultValue = 1.0f)
+    float srRefine = 1.0f;
+    @Tunable(title = "SR jitter", category = "Merge", description = "Synthesized per-pixel, per-frame sub-pixel jitter (raw px) for static bursts, where every frame would otherwise sample one lattice phase and the sensor's aliasing never cancels; scaled down where the frame already moved, so handheld bursts are unaffected. 0 = off", min = 0.0f, max = 1.0f, step = 0.05f, defaultValue = 0.25f)
+    float srJitter = 0.25f;
+    /**
+     * Pre-inflation noise model (independent of the merge strength setting):
+     * the SR fusion band must not scale with the denoise slider.
+     */
+    float srBaseNoiseS, srBaseNoiseO;
+
+    /**
+     * Rebuilds the per-site cross-channel luma for one packed frame. The
+     * drizzle fuses this field instead of the packed mosaic itself: a Bayer
+     * site's own lattice cannot carry the sensor band's corners, and the
+     * demosaic is what does. Returns false when the pass cannot run.
+     */
+    private boolean dispatchSrLuma(GLTexture packed, float[] rw, float[] gw, float[] bw) {
+        if (srLumaTex == null || packed == null || rw == null || gw == null || bw == null) {
+            return false;
+        }
+        try {
+            float[] wp = (parameters != null && parameters.whitePoint != null
+                    && parameters.whitePoint.length >= 3)
+                    ? parameters.whitePoint : new float[]{1f, 1f, 1f};
+            glProg.setLayout(8, 8, 1);
+            glProg.useAssetProgram("merge/srluma", true);
+            glProg.setTexture("alterPacked", packed);
+            glProg.setVar("srCfa", cfaShift);
+            glProg.setVar("srRw", rw[0], rw[1], rw[2], rw[3]);
+            glProg.setVar("srGw", gw[0], gw[1], gw[2], gw[3]);
+            glProg.setVar("srBw", bw[0], bw[1], bw[2], bw[3]);
+            glProg.setVar("srWhitePoint", wp);
+            glProg.setTextureCompute("srLumaOut", srLumaTex, true);
+            glProg.computeAuto(srLumaSize, 1);
+            return true;
+        } catch (Throwable t) {
+            Log.e("ESD4D", "SR luma pass failed", t);
+            return false;
+        }
+    }
+
+    /** Binds the SR fusion trust uniforms, shared by both drizzle paths. */
+    private void bindSrTrust() {
+        glProg.setVar("srTrustFloor", srTrustFloor);
+        glProg.setVar("srTrustBand", srTrustBand);
+        glProg.setVar("srNoiseS0", srBaseNoiseS);
+        glProg.setVar("srNoiseO0", srBaseNoiseO);
+        glProg.setVar("srClipAtten", srClipAtten);
+    }
+
+    /**
+     * Full-SR extra memory estimate against {@link #srMemoryCapMB}: two
+     * output-size RGBA16F accumulators, the raw-size luma texture, and the
+     * CPU ferry of the accumulator (the resolve lives in the post pipeline) -
+     * all alive together at export, since releasing the idle accumulator
+     * first put GL deletes in the readback's path. The target is the zoom-expanded
+     * full frame times the factor, so a small crop at a high factor is the
+     * expensive case. The engagement preview and the real gate must agree: if
+     * the preview says the drizzle fits and the gate then fails, the detail
+     * layer was skipped for a drizzle that cannot afford to run and the shot
+     * gets no multi-frame reconstruction at all.
+     */
+    private boolean srFullFitsMemory() {
+        try {
+            if (parameters == null || parameters.rawSize == null) return false;
+            if (parameters.rawSize.x <= 0 || parameters.rawSize.y <= 0) return false;
+            Point tgt = Parameters.computeResizedTarget(parameters, parameters.rawSize);
+            long out = (long) tgt.x * (long) tgt.y;
+            long raw = (long) parameters.rawSize.x * (long) parameters.rawSize.y;
+            // Packed R32UI accumulators: the two drizzle ping-pong textures
+            // (2 x 4 B/output px), the per-site luma texture (8 B/raw px), and
+            // the CPU ferry (4 B/output px) unless the shared-group handoff
+            // replaces it with a texture name.
+            long bytes = out * 8L + raw * 8L + (gpuHandoff ? 0L : out * 4L);
+            long cap = (long) srMemoryCapMB * 1024L * 1024L;
+            if (bytes > cap) {
+                Log.d("ESD4D", "Full-SR skipped: needs " + (bytes / 1048576)
+                        + "MB over cap " + srMemoryCapMB + "MB");
+                return false;
+            }
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * Joins the KernelNet worker and uploads the parameter map, once. SR
+     * paths call it before their base seed so the reference frame is
+     * reconstructed with the same steered kernel as the alter frames; the
+     * merge loop calls it before the first combine pass (a no-op afterwards).
+     * Returns null so the caller can clear its thread reference in place.
+     */
+    private Thread joinKernelNet(Thread t,
+            AtomicReference<KernelNetResult> result, String where) {
+        if (t == null) return null;
+        long joinT = System.currentTimeMillis();
+        try {
+            t.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        kernelsMap = createKernelsMap(result.get());
+        // Inference joined and params uploaded: both CPU copies are dead past
+        // this point (GPU textures carry on).
+        brightMapCPU = null;
+        brightMapCPUSize = null;
+        gpuSyncProfile();
+        Log.d("ESD4D", "Stage[merge:kernelnet-join] elapsed:"
+                + (System.currentTimeMillis() - joinT) + " ms " + where);
+        return null;
+    }
+
+    /**
+     * Allocates the per-cell sub-pixel refinement map (alignment grid) once
+     * per shot. The refinement pass itself runs per alter; any failure leaves
+     * the map null and the drizzles use the raw atlas motion.
+     */
+    private void ensureSrRefMap() {
+        if (srRefine <= 0f || srRefTex != null || parameters == null
+                || parameters.alignmentSize == null
+                || parameters.alignmentSize.x <= 0 || parameters.alignmentSize.y <= 0) {
+            return;
+        }
+        try {
+            // Twice the atlas resolution: the per-cell LK then corrects on
+            // 8-raw-px cells instead of the atlas's 16, which is where the
+            // within-cell residual from rotation and rolling shutter lives
+            // (a ~1px uncorrected residual is what blurs the drizzle fusion).
+            srRefSize = new Point(parameters.alignmentSize.x * 2, parameters.alignmentSize.y * 2);
+            srRefTex = new GLTexture(srRefSize,
+                    new GLFormat(GLFormat.DataType.FLOAT_16, 4), null, GL_LINEAR, GL_CLAMP_TO_EDGE);
+        } catch (Throwable t) {
+            Log.e("ESD4D", "SR refine map alloc failed, disabled", t);
+            srRefTex = null;
+            srRefSize = null;
+        }
+    }
+
+    /**
+     * Packed-channel to canonical RGB mapping for the drizzle warp: returns
+     * {R,G0,G1,B} channel indices, or null for layouts without a defined
+     * quad contract (quad/mono/...). RGGB/GRBG/GBRG pack canonically;
+     * BGGR swaps R/B in r/a (see merge00/merge2o), which channel-wise merge
+     * stages tolerate but RGB assembly must decode explicitly.
+     */
+    private static int[] srChannelMap(int cfaPattern, Point cfaShift) {
+        if (cfaPattern < 0 || cfaPattern > 3 || cfaShift == null) return null;
+        int sx = cfaShift.x & 1, sy = cfaShift.y & 1;
+        int r = -1, g0 = -1, g1 = -1, b = -1;
+        for (int c = 0; c < 4; c++) {
+            int px = (sx + (c & 1)) & 1;
+            int py = (sy + ((c >> 1) & 1)) & 1;
+            int col; // 0=R,1=G,2=B
+            if (cfaPattern == 0) { // RGGB
+                col = (px == 0) ? (py == 0 ? 0 : 1) : (py == 0 ? 1 : 2);
+            } else if (cfaPattern == 1) { // GRBG
+                col = (px == 0) ? (py == 0 ? 1 : 2) : (py == 0 ? 0 : 1);
+            } else if (cfaPattern == 2) { // GBRG
+                col = (px == 0) ? (py == 0 ? 1 : 0) : (py == 0 ? 2 : 1);
+            } else { // BGGR
+                col = (px == 0) ? (py == 0 ? 2 : 1) : (py == 0 ? 1 : 0);
+            }
+            if (col == 0) r = c;
+            else if (col == 2) b = c;
+            else if (g0 < 0) g0 = c;
+            else g1 = c;
+        }
+        if (r < 0 || b < 0 || g0 < 0 || g1 < 0) return null;
+        return new int[]{r, g0, g1, b};
+    }
+    @Tunable(title = "Full SR motion bound", category = "Merge", description = "Maximum drizzle motion magnitude in packed px; real handheld motion passes, garbage vectors cannot mirror the frame", min = 8, max = 256, step = 8, defaultValue = 64)
+    float srMotionMax = 64f;
+    /** SR detail ping-pong accumulators (packed RGBA16F); null unless srActive. */
+    GLTexture srAccA;
+    GLTexture srAccB;
+    /** Accumulator holding the final SR detail sum (one of the above). */
+    GLTexture srAccFinal;
+    /** Normalized SR detail highpass (packed RGBA16F); bound by merge2o, exported for post. */
+    GLTexture srHP;
+    /** SR detail highpass for post-upscale application (packed RGBA16F halves); may be null. */
+    public ByteBuffer srDetailBase;
+    /** View of {@link #srDetailBase}; never freed (see kernelsMapCPU). */
+    public ShortBuffer srDetailCPU;
+    /** Size of {@link #srDetailCPU} (packed domain). */
+    public Point srDetailCPUSize;
+    /** Packing shift used for {@link #srDetailCPU} (copy of {@link #cfaShift}); may be null. */
+    public Point srDetailShift;
+    /** Full-SR ping-pong accumulators (target R32UI, luma + weight packed as halves); null unless srFullActive. */
+    GLTexture srDriA;
+    GLTexture srDriB;
+    /** Full-SR drizzled image for post (target RGBA16F halves: rgb, weight); may be null. */
+    public ByteBuffer srFullBase;
+    /** View of {@link #srFullBase}; never freed (see kernelsMapCPU). */
+    public ShortBuffer srFullCPU;
+    /** Size of {@link #srFullCPU} (output grid). */
+    public Point srFullSize;
+    /**
+     * GPU handoff: the post's context is created in this context's EGL share
+     * group, so the drizzle accumulator (and the 3a detail texture) cross the
+     * pipeline boundary as texture names instead of full-size CPU ferries.
+     * Set by {@link #probeGpuHandoff()} before Run; when false the CPU ferry
+     * paths are used exactly as before.
+     */
+    public boolean gpuHandoff = false;
+    /** Shared accumulator texture name handed to the post (0 = CPU ferry). */
+    public int srFullTexID = 0;
+    /** Shared 3a detail texture name handed to the post (0 = CPU ferry). */
+    public int srDetailTexID = 0;
+    /** True once the full-SR accumulator is allocated for this shot. */
+    boolean srFullActive;
+    /** Set by the processor when a DNG save is requested (gates Bayer drizzle). */
+    public boolean saveDngWanted = false;
+    /** Bayer drizzle ping-pong (target Bayer grid, value + weight packed as halves in R32UI); null unless srBayerActive. */
+    GLTexture srBayA;
+    GLTexture srBayB;
+    /**
+     * Per-site cross-channel luma at the crop's raw grid (rebuilt per frame by
+     * merge/srluma); the JPEG drizzle fuses this field rather than the packed
+     * mosaic, whose per-channel lattices cannot carry the sensor band's
+     * corners. Null when the pass is unavailable.
+     */
+    GLTexture srLumaTex;
+    Point srLumaSize;
+    /**
+     * Per-cell sub-pixel motion correction (alignment grid, packed texels),
+     * rebuilt for every alter by the refinement pass; null when disabled or
+     * failed.
+     */
+    GLTexture srRefTex;
+    Point srRefSize;
+    /** True once the Bayer accumulators are allocated for this shot. */
+    boolean srBayerActive;
+    /** Bayer drizzle export (target Bayer halves, scalar in .r); may be null. */
+    public ByteBuffer srBayerBase;
+    /** View of {@link #srBayerBase}; never freed (see kernelsMapCPU). */
+    public ShortBuffer srBayerCPU;
+    /** Size of {@link #srBayerCPU} (target Bayer grid). */
+    public Point srBayerCPUSize;
+    /** Frames accumulated into {@link #srAccFinal} (normalization divisor). */
+    int srAccumFrames;
+    /** True once the SR accumulators are allocated for this shot. */
+    boolean srActive;
     @Tunable(title = "HotPixels detect threshold", category = "Merge", description = "Higher multiplier detects less hotpixels", min = 0.5f, max = 5.0f, step = 0.1f, defaultValue = 1.5f)
     double detectThr;
 
@@ -1093,6 +1359,8 @@ public class ESD4D extends GLOneScript {
         // (noiseS/noiseO below are merge-strength inflated).
         float rawNoiseS = noiseS;
         float rawNoiseO = noiseO;
+        srBaseNoiseS = rawNoiseS;
+        srBaseNoiseO = rawNoiseO;
         noiseS = (float)Math.max(noiseS * noisempy * adaptiveNMpy * adaptiveNMpy,noiseMin);
         noiseO = (float)Math.max(noiseO * noisempy * adaptiveNMpy * adaptiveNMpy,noiseMin);
         if(enableHotPixelCorrection) {
@@ -1238,6 +1506,320 @@ public class ESD4D extends GLOneScript {
 
         long mergeLoopT = System.currentTimeMillis();
         int alterSlot = 0;
+        // 3a SR detail layer: motion-compensated residuals accumulate on
+        // multi-frame upscales and on explicit 1.0x (enhanced native:
+        // detail without resizing; Disabled stays the untouched legacy
+        // path). Single frames, native/downscale sizes and over-budget
+        // sensors skip allocation entirely and render exactly as before
+        // (srGain 0 below).
+        srActive = false;
+        srAccA = null;
+        srAccB = null;
+        srAccFinal = null;
+        srAccumFrames = 0;
+        // Engagement rule for both SR layers: any genuine upscale whose target
+        // is at most srMaxExpand times the raw slice - the per-sensor resize
+        // factor and a digital-zoom crop both count, since computeResizedTarget
+        // already folds the zoom expansion in. The drizzle's sub-pixel
+        // diversity (handheld dither plus the synthesized jitter) supports
+        // roughly 2x; beyond that the raw samples land several output pixels
+        // apart and the fused field degenerates into a smooth interpolation,
+        // which the KernelNet reconstructs better. The cap is a tunable
+        // (default 4.0): the fused luma's honest band ends at the raw Nyquist
+        // (0.5/expand c/px), so it leaves the eye's sensitive range around 4x
+        // while the fused's magnified raw grain keeps growing. Downscales have
+        // nothing to resolve.
+        // Declared here: both the 3a setup and the full-SR gate read them.
+        Point srTgt = null;
+        float srExpand = 0f;
+        boolean srScaleOk = false;
+        try {
+            float srFactor = parameters != null ? parameters.getActiveUpscaleFactor() : 0f;
+            try {
+                srTgt = com.particlesdevs.photoncamera.processing.render.Parameters
+                        .computeResizedTarget(parameters, parameters != null ? parameters.rawSize : null);
+            } catch (Exception ignored) {
+            }
+            srExpand = (srTgt != null && parameters != null && parameters.rawSize != null
+                    && parameters.rawSize.x > 0)
+                    ? srTgt.x / (float) parameters.rawSize.x : 0f;
+            srScaleOk = srExpand > 1.0f + 1e-4f && srExpand <= srMaxExpand + 1e-4f;
+            // The 3a layer accumulates even when the full-SR will run: it is
+            // the fallback if the full-SR export fails, and it only costs a
+            // packed-size accumulator pair (~50MB). merge2o keeps the merged
+            // frame clean while the full-SR ferry exists and the post skips
+            // the layer the same way, so a working full-SR is unaffected -
+            // but a failed export no longer leaves the shot with nothing.
+            boolean wantSR = srDetailEnable && images != null && images.size() > 1
+                    && srScaleOk
+                    && packedSize != null
+                    && packedSize.x > 0 && packedSize.y > 0;
+            if (wantSR) {
+                long needBytes = 2L * (long) packedSize.x * (long) packedSize.y * 4L * 2L;
+                if (needBytes <= (long) srMemoryCapMB * 1024L * 1024L) {
+                    srAccA = new GLTexture(packedSize, new GLFormat(GLFormat.DataType.FLOAT_16, 4), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
+                    srAccB = new GLTexture(packedSize, new GLFormat(GLFormat.DataType.FLOAT_16, 4), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
+                    srActive = true;
+                    Log.d("ESD4D", "SR detail active: " + packedSize.x + "x" + packedSize.y
+                            + " packed accum x2, factor=" + srFactor);
+                } else {
+                    Log.d("ESD4D", "SR detail skipped: need " + (needBytes / 1048576)
+                            + "MB over cap " + srMemoryCapMB + "MB");
+                }
+            }
+        } catch (Throwable t) {
+            Log.e("ESD4D", "SR detail setup failed, disabled", t);
+            srActive = false;
+            if (srAccA != null) {
+                try {
+                    srAccA.close();
+                } catch (Exception ignored) {
+                }
+                srAccA = null;
+            }
+            if (srAccB != null) {
+                try {
+                    srAccB.close();
+                } catch (Exception ignored) {
+                }
+                srAccB = null;
+            }
+        }
+        // 3b full-SR drizzle: burst frames accumulate onto the output grid
+        // (translation + local block motion, same atlas convention as
+        // mergeAlign). Active on multi-frame upscales with a real aligner
+        // (halide/pyramid; flownet uses per-frame flow fields and off has no
+        // motion, both fall back) and aspect-sliced shots off (their output
+        // grid differs from the merge grid). Post consumes the accumulation
+        // instead of the aniso upscale; any failure falls back to it.
+        Point srFullTarget = null;
+        GLTexture srDriOut = null;
+        float srFullOx = 0f, srFullOy = 0f;
+        float srFullW = 0f, srFullH = 0f;
+        float[] srRwArr = null, srGwArr = null, srBwArr = null;
+        srFullActive = false;
+        srDriA = null;
+        srDriB = null;
+        srFullBase = null;
+        srFullCPU = null;
+        srFullSize = null;
+        try {
+            float srFFactor = parameters != null ? parameters.getActiveUpscaleFactor() : 0f;
+            boolean srFlowAlign = Objects.equals(alignerSelect, "flownet");
+            boolean srOffAlign = Objects.equals(alignerSelect, "off");
+            boolean srZoomed = false;
+            boolean srAspect = false;
+            try {
+                srZoomed = com.particlesdevs.photoncamera.app.PhotonCamera.getCaptureController() != null
+                        && com.particlesdevs.photoncamera.app.PhotonCamera.getCaptureController().zoomController.isZoomed();
+                srAspect = com.particlesdevs.photoncamera.app.PhotonCamera.getSettings().aspect169 && !srZoomed;
+            } catch (Exception ignored) {
+            }
+            if (srFullEnable && images != null && images.size() > 1
+                    && srScaleOk && !srFlowAlign && !srOffAlign && !srAspect
+                    && parameters != null && parameters.rawSize != null
+                    && parameters.rawSize.x > 0 && parameters.rawSize.y > 0
+                    && alignmentTex != null && base != null
+                    && srFullFitsMemory()) {
+                int[] srMap = srChannelMap((int) parameters.cfaPattern, cfaShift);
+                if (srMap == null) {
+                    Log.d("ESD4D", "Full-SR skipped: unsupported CFA pattern " + parameters.cfaPattern);
+                } else {
+                    // Collect the map before the seed dispatch: the reference
+                    // frame is one sample among equals, so it must not carry
+                    // the bilinear kernel the alters no longer use.
+                    ensureSrRefMap();
+                    srRwArr = new float[4];
+                    srGwArr = new float[4];
+                    srBwArr = new float[4];
+                    // One-hot selectors (1 at every position of the colour,
+                    // including both green positions): merge/srluma reads them
+                    // as own-channel tests (> 0.5) and as neighbour weights.
+                    // 0.5 at the greens made every green site fail the own
+                    // test, so it was rebuilt from its diagonal neighbours
+                    // instead of using its own sample - half of all sites and
+                    // 71.5% of the luma.
+                    srRwArr[srMap[0]] = 1f;
+                    srGwArr[srMap[1]] = 1f;
+                    srGwArr[srMap[2]] = 1f;
+                    srBwArr[srMap[3]] = 1f;
+                Point tgt = com.particlesdevs.photoncamera.processing.render.Parameters.computeResizedTarget(parameters, parameters.rawSize);
+                // The drizzled image replaces the aniso reconstruction, so it
+                // must use the aniso geometry: the crop stretched over the
+                // target (crop x factor, zoom expand folded into the target
+                // size). The tone stages map output UV onto the crop's
+                // gain-map footprint and rescale the sensor bounds by
+                // output/rawSize, both of which assume the output covers the
+                // crop - not a full-frame canvas with the crop placed at its
+                // sensor offset (which also left the map UV outside [0,1]).
+                srFullW = parameters.rawSize.x;
+                srFullH = parameters.rawSize.y;
+                srFullOx = 0f;
+                srFullOy = 0f;
+                srDriA = new GLTexture(tgt, new GLFormat(GLFormat.DataType.UNSIGNED_32, 1), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
+                srDriB = new GLTexture(tgt, new GLFormat(GLFormat.DataType.UNSIGNED_32, 1), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
+                srLumaSize = new Point(parameters.rawSize);
+                srLumaTex = new GLTexture(srLumaSize,
+                        new GLFormat(GLFormat.DataType.FLOAT_16, 4), null, GL_LINEAR, GL_CLAMP_TO_EDGE);
+                // Base frame first (exact init, viewport/FBO/blend free:
+                // compute dispatches know no viewport). Its per-site luma must
+                // exist before the drizzle reads it.
+                if (!dispatchSrLuma(base, srRwArr, srGwArr, srBwArr)) {
+                    throw new IllegalStateException("SR luma pass failed");
+                }
+                glProg.setLayout(tile, tile, 1);
+                glProg.useAssetProgram("merge/srwarp", true);
+                glProg.setTexture("srLumaTex", srLumaTex);
+                glProg.setTexture("diffPacked", base);
+                glProg.setTexture("basePacked", base);
+                glProg.setTexture("alignmentTexture", alignmentTex);
+                glProg.setTexture("srRefMap", srRefTex != null ? srRefTex : base);
+                glProg.setVar("srRefine", srRefTex != null ? srRefine : 0f);
+                glProg.setTextureCompute("srDriIn", srDriB, false);
+                glProg.setTextureCompute("srDriOut", srDriA, true);
+                glProg.setVar("srShift", 0, 0);
+                glProg.setVar("srAlignSize", parameters.alignmentSize);
+                glProg.setVar("srRawHalf", new Point(parameters.rawSize.x / 2, parameters.rawSize.y / 2));
+                glProg.setVar("srCfa", cfaShift);
+                glProg.setVar("srFullPerOut", srFullW / (float) tgt.x, srFullH / (float) tgt.y);
+                glProg.setVar("srOrigin", srFullOx, srFullOy);
+                glProg.setVar("srExpose", 1.f / images.get(0).pair.layerMpy);
+                glProg.setVar("srZeroMotion", 1f);
+                glProg.setVar("srJitter", srJitter);
+                glProg.setVar("srFrame", 0);
+                bindSrTrust();
+                glProg.setVar("srMotionMax", Math.max(srMotionMax, 1f));
+                glProg.setVar("srFirst", 1);
+                while (android.opengl.GLES30.glGetError() != android.opengl.GLES30.GL_NO_ERROR) {
+                }
+                glProg.computeAuto(srDriA.mSize, 1);
+                if (android.opengl.GLES30.glGetError() != android.opengl.GLES30.GL_NO_ERROR) {
+                    throw new IllegalStateException("SR base drizzle dispatch failed");
+                }
+                srDriOut = srDriA;
+                srFullTarget = tgt;
+                srFullActive = true;
+                Log.d("ESD4D", "Full-SR drizzle active: " + tgt.x + "x" + tgt.y
+                        + ", factor=" + srFFactor + ", expand=" + srExpand);
+                }
+            } else {
+                Log.d("ESD4D", "Full-SR declined: enable=" + srFullEnable
+                        + " frames=" + (images != null ? images.size() : 0)
+                        + " expand=" + srExpand + " factor=" + srFFactor
+                        + " flow=" + srFlowAlign + " off=" + srOffAlign + " aspect=" + srAspect
+                        + " raw=" + (parameters != null && parameters.rawSize != null
+                                ? parameters.rawSize.x + "x" + parameters.rawSize.y : "null")
+                        + " cfa=" + (parameters != null ? parameters.cfaPattern : -1));
+            }
+        } catch (Throwable t) {
+            Log.e("ESD4D", "Full-SR setup failed, disabled", t);
+            srFullActive = false;
+            if (srDriA != null) {
+                try {
+                    srDriA.close();
+                } catch (Exception ignored) {
+                }
+                srDriA = null;
+            }
+            if (srDriB != null) {
+                try {
+                    srDriB.close();
+                } catch (Exception ignored) {
+                }
+                srDriB = null;
+            }
+        }
+        // Bayer drizzle for scaled/SR DNG: same motion warp as the RGB
+        // drizzle, accumulated per Bayer site (merge2o channel rule, so every
+        // CFA layout the merge supports works) with a consensus clamp for
+        // ghost rejection. Active only when the processor requested a DNG
+        // save and the factor is explicitly set; the running consensus needs
+        // no weight plane and no normalize pass.
+        Point srBayerTarget = null;
+        float srBayerOx = 0f, srBayerOy = 0f;
+        float srBayerW = 0f, srBayerH = 0f;
+        GLTexture srBayOut = null;
+        srBayerActive = false;
+        srBayA = null;
+        srBayB = null;
+        srBayerBase = null;
+        srBayerCPU = null;
+        srBayerCPUSize = null;
+        try {
+            float srBFactor = parameters != null ? parameters.getActiveUpscaleFactor() : 0f;
+            boolean wantBay = saveDngWanted && images != null && images.size() > 1
+                    && !com.particlesdevs.photoncamera.processing.render.Parameters.isResizeDisabled(srBFactor)
+                    && !Objects.equals(alignerSelect, "flownet") && !Objects.equals(alignerSelect, "off")
+                    && parameters != null && parameters.rawSize != null
+                    && parameters.rawSize.x > 0 && parameters.rawSize.y > 0
+                    && alignmentTex != null && base != null;
+            int[] srBayMap = wantBay ? srChannelMap((int) parameters.cfaPattern, cfaShift) : null;
+            if (wantBay && srBayMap == null) {
+                Log.d("ESD4D", "Bayer drizzle skipped: unsupported CFA pattern " + parameters.cfaPattern);
+            } else if (wantBay) {
+                // Same reasoning as the JPEG seed: the reference frame is
+                // reconstructed steered like every alter.
+                ensureSrRefMap();
+                Point tgt = com.particlesdevs.photoncamera.processing.render.Parameters.computeResizedTarget(parameters, parameters.rawSize);
+                boolean sCropped = parameters.isCropped && parameters.fullRawSize != null
+                        && parameters.fullRawSize.x > 0 && parameters.fullRawSize.y > 0;
+                srBayerW = sCropped ? parameters.fullRawSize.x : parameters.rawSize.x;
+                srBayerH = sCropped ? parameters.fullRawSize.y : parameters.rawSize.y;
+                srBayerOx = (sCropped && parameters.cropOrigin != null) ? parameters.cropOrigin.x : 0f;
+                srBayerOy = (sCropped && parameters.cropOrigin != null) ? parameters.cropOrigin.y : 0f;
+                srBayA = new GLTexture(tgt, new GLFormat(GLFormat.DataType.UNSIGNED_32, 1), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
+                srBayB = new GLTexture(tgt, new GLFormat(GLFormat.DataType.UNSIGNED_32, 1), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
+                glProg.setLayout(tile, tile, 1);
+                glProg.useAssetProgram("merge/srbayer", true);
+                glProg.setTexture("alterPacked", base);
+                glProg.setTexture("alignmentTexture", alignmentTex);
+                glProg.setTexture("diffPacked", base);
+                glProg.setTexture("srRefMap", srRefTex != null ? srRefTex : base);
+                glProg.setVar("srRefine", srRefTex != null ? srRefine : 0f);
+                glProg.setTextureCompute("srBayIn", srBayB, false);
+                glProg.setTextureCompute("srBayOut", srBayA, true);
+                glProg.setVar("srShift", 0, 0);
+                glProg.setVar("srAlignSize", parameters.alignmentSize);
+                glProg.setVar("srRawHalf", new Point(parameters.rawSize.x / 2, parameters.rawSize.y / 2));
+                glProg.setVar("srCfa", cfaShift);
+                glProg.setVar("srFullPerOut", srBayerW / (float) tgt.x, srBayerH / (float) tgt.y);
+                glProg.setVar("srOrigin", srBayerOx, srBayerOy);
+                glProg.setVar("srExpose", 1.f / images.get(0).pair.layerMpy);
+                glProg.setVar("srBaseExpose", 1.f / images.get(0).pair.layerMpy);
+                glProg.setTexture("basePacked", base);
+                glProg.setVar("srZeroMotion", 1f);
+                glProg.setVar("srFirst", 1);
+                bindSrTrust();
+                glProg.setVar("srMotionMax", Math.max(srMotionMax, 1f));
+                while (android.opengl.GLES30.glGetError() != android.opengl.GLES30.GL_NO_ERROR) {
+                }
+                glProg.computeAuto(srBayA.mSize, 1);
+                if (android.opengl.GLES30.glGetError() != android.opengl.GLES30.GL_NO_ERROR) {
+                    throw new IllegalStateException("SR Bayer base dispatch failed");
+                }
+                srBayOut = srBayA;
+                srBayerTarget = tgt;
+                srBayerActive = true;
+                Log.d("ESD4D", "Bayer drizzle active: " + tgt.x + "x" + tgt.y + ", factor=" + srBFactor);
+            }
+        } catch (Throwable t) {
+            Log.e("ESD4D", "Bayer drizzle setup failed, disabled", t);
+            srBayerActive = false;
+            if (srBayA != null) {
+                try {
+                    srBayA.close();
+                } catch (Exception ignored) {
+                }
+                srBayA = null;
+            }
+            if (srBayB != null) {
+                try {
+                    srBayB.close();
+                } catch (Exception ignored) {
+                }
+                srBayB = null;
+            }
+        }
         for (int f = 0; f < images.size(); f++) {
             startT();
             if(f == minExpIdx) continue;
@@ -1323,29 +1905,171 @@ public class ESD4D extends GLOneScript {
             gpuSyncProfile();
             Log.d("ESD4D", "Stage[merge:mergeAlign] elapsed:" + (System.currentTimeMillis() - stageT) + " ms f=" + f);
 
+            // Sub-pixel alignment refinement for the SR drizzles: a bounded
+            // Lucas-Kanade step against the running base, per alignment cell,
+            // dispatched before the drizzles so both paths share one pass.
+            // baseDiff is fresh here. Failure just drops the correction.
+            if (srRefTex != null && srRefine > 0f && (srFullActive || srBayerActive)
+                    && baseDiff != null && base != null) {
+                try {
+                    glProg.setLayout(8, 8, 1);
+                    glProg.useAssetProgram("merge/srrefine", true);
+                    glProg.setTexture("diffPacked", baseDiff);
+                    glProg.setTexture("basePacked", base);
+                    // Half the atlas cell: the refine map runs at 2x its
+                    // resolution, so the cell in packed texels is tile/4.
+                    glProg.setVar("srRefCell", Math.max(1, parameters.tile / 4));
+                    glProg.setTextureCompute("srRefOut", srRefTex, true);
+                    glProg.computeAuto(srRefSize, 1);
+                } catch (Throwable t) {
+                    Log.e("ESD4D", "SR refine pass failed, disabled", t);
+                    try {
+                        srRefTex.close();
+                    } catch (Exception ignored) {
+                    }
+                    srRefTex = null;
+                    srRefSize = null;
+                }
+            }
+
+            // SR detail: fold this frame's motion-compensated residual into
+            // the ping-pong accumulator (dispatched before the kernelnet join
+            // below so GPU work overlaps the CPU wait). baseDiff is fresh
+            // here; combine only reads it. Any failure disables the layer and
+            // the shot continues exactly as without it.
+            if (srActive && srAccA != null && srAccB != null && baseDiff != null) {
+                try {
+                    GLTexture srIn = (srAccumFrames % 2 == 0) ? srAccA : srAccB;
+                    GLTexture srOut = (srAccumFrames % 2 == 0) ? srAccB : srAccA;
+                    glProg.setLayout(tile, tile, 1);
+                    glProg.useAssetProgram("merge/sradd", true);
+                    glProg.setTextureCompute("srAccIn", srIn, false);
+                    glProg.setTextureCompute("srDiffIn", baseDiff, false);
+                    glProg.setTextureCompute("srAccOut", srOut, true);
+                    glProg.setVar("srClamp", srDetailClamp);
+                    glProg.setVar("srFirst", srAccumFrames == 0 ? 1 : 0);
+                    glProg.computeAuto(srOut.mSize, 1);
+                    srAccFinal = srOut;
+                    srAccumFrames++;
+                } catch (Throwable t) {
+                    Log.e("ESD4D", "SR accum failed, disabling", t);
+                    srActive = false;
+                }
+            }
+
+            // 3b full-SR drizzle: warp this frame onto the output grid,
+            // accumulated via ping-pong compute (viewport/FBO/blend free by
+            // construction). baseDiff is fresh here (robustness weight
+            // source); combine only reads it. Any failure disables the layer
+            // for a clean fallback.
+            if (srFullActive && srDriA != null && srDriB != null && srDriOut != null
+                    && srFullTarget != null
+                    && alter != null && baseDiff != null && alignmentTex != null) {
+                try {
+                    GLTexture srDriIn = srDriOut;
+                    GLTexture srDriNext = (srDriOut == srDriA) ? srDriB : srDriA;
+                    // Rebuild this frame's luma FIRST, then load srwarp: the
+                    // luma pass loads merge/srluma, and setTextureCompute
+                    // resolves the image layout against the *active* program,
+                    // so binding srDriIn/srDriOut before it would look them up
+                    // in srluma's map, silently skip glBindImageTexture, and
+                    // leave the dispatch reading/writing whatever units were
+                    // bound before (the luma texture, baseDiff). Same order as
+                    // the base seed below.
+                    if (!dispatchSrLuma(alter, srRwArr, srGwArr, srBwArr)) {
+                        throw new IllegalStateException("SR luma pass failed");
+                    }
+                    glProg.setLayout(tile, tile, 1);
+                    glProg.useAssetProgram("merge/srwarp", true);
+                    glProg.setTexture("srLumaTex", srLumaTex);
+                    glProg.setTexture("diffPacked", baseDiff);
+                    glProg.setTexture("basePacked", base);
+                    glProg.setTexture("alignmentTexture", alignmentTex);
+                    glProg.setTexture("srRefMap", srRefTex != null ? srRefTex : base);
+                    glProg.setVar("srRefine", srRefTex != null ? srRefine : 0f);
+                    glProg.setTextureCompute("srDriIn", srDriIn, false);
+                    glProg.setTextureCompute("srDriOut", srDriNext, true);
+                    glProg.setVar("srShift", shift);
+                    glProg.setVar("srAlignSize", parameters.alignmentSize);
+                    glProg.setVar("srRawHalf", new Point(parameters.rawSize.x / 2, parameters.rawSize.y / 2));
+                    glProg.setVar("srCfa", cfaShift);
+                    glProg.setVar("srFullPerOut", srFullW / (float) srFullTarget.x, srFullH / (float) srFullTarget.y);
+                    glProg.setVar("srOrigin", srFullOx, srFullOy);
+                    glProg.setVar("srExpose", exposure);
+                    glProg.setVar("srZeroMotion", 0f);
+                    glProg.setVar("srJitter", srJitter);
+                    glProg.setVar("srFrame", f);
+                    bindSrTrust();
+                    glProg.setVar("srMotionMax", Math.max(srMotionMax, 1f));
+                    glProg.setVar("srFirst", 0);
+                    while (android.opengl.GLES30.glGetError() != android.opengl.GLES30.GL_NO_ERROR) {
+                    }
+                    glProg.computeAuto(srDriNext.mSize, 1);
+                    if (android.opengl.GLES30.glGetError() != android.opengl.GLES30.GL_NO_ERROR) {
+                        throw new IllegalStateException("SR drizzle dispatch failed");
+                    }
+                    srDriOut = srDriNext;
+                } catch (Throwable t) {
+                    Log.e("ESD4D", "Full-SR drizzle failed, disabling", t);
+                    srFullActive = false;
+                }
+            }
+
+            // Bayer drizzle for scaled/SR DNG: same warp, per-site channel,
+            // consensus-clamped running average (no weight plane, no normalize
+            // pass). Any failure disables the layer for the legacy DNG path.
+            if (srBayerActive && srBayA != null && srBayB != null && srBayOut != null
+                    && srBayerTarget != null
+                    && alter != null && alignmentTex != null) {
+                try {
+                    GLTexture srBayIn = srBayOut;
+                    GLTexture srBayNext = (srBayOut == srBayA) ? srBayB : srBayA;
+                    glProg.setLayout(tile, tile, 1);
+                    glProg.useAssetProgram("merge/srbayer", true);
+                    glProg.setTexture("alterPacked", alter);
+                    glProg.setTexture("alignmentTexture", alignmentTex);
+                    glProg.setTexture("diffPacked", baseDiff);
+                    glProg.setTexture("srRefMap", srRefTex != null ? srRefTex : base);
+                    glProg.setVar("srRefine", srRefTex != null ? srRefine : 0f);
+                    glProg.setTextureCompute("srBayIn", srBayIn, false);
+                    glProg.setTextureCompute("srBayOut", srBayNext, true);
+                    glProg.setVar("srShift", shift);
+                    glProg.setVar("srAlignSize", parameters.alignmentSize);
+                    glProg.setVar("srRawHalf", new Point(parameters.rawSize.x / 2, parameters.rawSize.y / 2));
+                    glProg.setVar("srCfa", cfaShift);
+                    glProg.setVar("srFullPerOut", srBayerW / (float) srBayerTarget.x, srBayerH / (float) srBayerTarget.y);
+                    glProg.setVar("srOrigin", srBayerOx, srBayerOy);
+                    glProg.setVar("srExpose", exposure);
+                    glProg.setVar("srBaseExpose", 1.f / images.get(0).pair.layerMpy);
+                    glProg.setTexture("basePacked", mergeBase0);
+                    glProg.setVar("srZeroMotion", 0f);
+                    glProg.setVar("srFirst", 0);
+                    bindSrTrust();
+                    glProg.setVar("srMotionMax", Math.max(srMotionMax, 1f));
+                    while (android.opengl.GLES30.glGetError() != android.opengl.GLES30.GL_NO_ERROR) {
+                    }
+                    glProg.computeAuto(srBayNext.mSize, 1);
+                    if (android.opengl.GLES30.glGetError() != android.opengl.GLES30.GL_NO_ERROR) {
+                        throw new IllegalStateException("SR Bayer drizzle dispatch failed");
+                    }
+                    srBayOut = srBayNext;
+                } catch (Throwable t) {
+                    Log.e("ESD4D", "Bayer drizzle failed, disabling", t);
+                    srBayerActive = false;
+                }
+            }
+
             if (PhotonCamera.DEBUG)
                 Log.d("ESD4D", "create diff");
 
             // First combine pass: collect the KernelNet result that has been
             // running concurrently with alignment and this frame's merge00 /
             // mergeAlign work. Waits only for any inference remainder; the
-            // texture build below needs the GL thread anyway.
+            // texture build below needs the GL thread anyway. SR paths may
+            // have collected it already (steered seed), in which case this
+            // is a no-op.
             stageT = System.currentTimeMillis();
-            if (kernelNetThread != null) {
-                try {
-                    kernelNetThread.join();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-                kernelNetThread = null;
-                kernelsMap = createKernelsMap(kernelNetResult.get());
-                // Inference joined and params uploaded: both CPU copies are
-                // dead past this point (GPU textures carry on).
-                brightMapCPU = null;
-                brightMapCPUSize = null;
-                gpuSyncProfile();
-                Log.d("ESD4D", "Stage[merge:kernelnet-join] elapsed:" + (System.currentTimeMillis() - stageT) + " ms f=" + f);
-            }
+            kernelNetThread = joinKernelNet(kernelNetThread, kernelNetResult, "f=" + f);
 
             glProg.setLayout(tile, tile, 1);
             stageT = System.currentTimeMillis();
@@ -1391,15 +2115,12 @@ public class ESD4D extends GLOneScript {
         }
         Log.d("ESD4D", "Stage[merge-loop] elapsed:" + (System.currentTimeMillis() - mergeLoopT) + " ms");
 
-        // The merge result stays normalized fp16 end-to-end: merge2o unpacks
-        // the packed quads straight into the R16F output buffer (no uint16
-        // re-encode); PostPipeline consumes it as-is and the uint16 DNG save
-        // re-encodes on the CPU (Allocator.createU16FromF16).
-        // Temporal temporaries are dead past this point: merge2o below reads
-        // only base + alignmentTex. Release ~530 MB (64 MP) before the output
-        // readback instead of AfterRun. Fields are nulled and AfterRun
-        // null-guards them, so a stale close can never delete a recycled ID.
-        long mergeOutT = System.currentTimeMillis();
+        // Temporal temporaries are dead past the loop: merge2o below reads
+        // only base + alignmentTex, and no finalize/export below touches
+        // them. Release (~530 MB at 64 MP, plus upload fences) BEFORE the
+        // readback mallocs instead of after, so peak pressure doesn't fail
+        // them. Fields are nulled and AfterRun null-guards them, so a stale
+        // close can never delete a recycled ID.
         if (mergeBase0 != base) mergeBase0.close();
         baseDiff.close(); baseDiff = null;
         alter.close(); alter = null;
@@ -1408,11 +2129,259 @@ public class ESD4D extends GLOneScript {
         deleteUploadFences(alterUploadFences);
         inputBase.close(); inputBase = null;
 
+        // SR detail finalize: normalized highpass of the accumulator into
+        // srHP (bound by merge2o below and exported for the post-upscale
+        // apply node), then release the accumulators well before the output
+        // readback. Export failure only drops the post node; merge2o still
+        // applies the texture.
+        srHP = null;
+        if (srActive && srAccFinal != null && srAccumFrames > 0) {
+            try {
+                srHP = new GLTexture(packedSize, new GLFormat(GLFormat.DataType.FLOAT_16, 4), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
+                glProg.setLayout(tile, tile, 1);
+                glProg.useAssetProgram("merge/srhp", true);
+                glProg.setTextureCompute("srHpIn", srAccFinal, false);
+                glProg.setTextureCompute("srHpOut", srHP, true);
+                glProg.setVar("srNorm", 1.0f / srAccumFrames);
+                float srT1 = Math.max(srCoring1 * kernelSigma, srCoring0 * kernelSigma + 1e-4f);
+                glProg.setVar("srT0", srCoring0 * kernelSigma);
+                glProg.setVar("srT1", srT1);
+                glProg.computeAuto(srHP.mSize, 1);
+                gpuSyncProfile();
+                if (gpuHandoff) {
+                    // Shared-group handoff (see the full-SR export): the detail
+                    // texture crosses by name; no readback, no ferry.
+                    srDetailTexID = srHP.mTextureID;
+                    srDetailCPUSize = new Point(packedSize);
+                    srDetailShift = cfaShift != null ? new Point(cfaShift) : null;
+                } else {
+                    // BufferLoad (not BindBuffer): mBuffer is 0 until Bufferize
+                    // runs, and binding FBO 0 would attach this RGBA16F texture to
+                    // the default framebuffer - the half-float read then hits an
+                    // 8-bit buffer and fails with GL_INVALID_OPERATION (0x502).
+                    srHP.BufferLoad();
+                    ByteBuffer srRead = srHP.textureBufferHalfFloatNative();
+                    if (srRead != null) {
+                        srRead.order(java.nio.ByteOrder.nativeOrder());
+                        srRead.rewind();
+                        srDetailBase = srRead;
+                        srDetailCPU = srRead.asShortBuffer();
+                        srDetailCPUSize = new Point(packedSize);
+                        srDetailShift = cfaShift != null ? new Point(cfaShift) : null;
+                    } else {
+                        Log.e("ESD4D", "SR detail export failed, post node will pass through");
+                    }
+                }
+            } catch (Throwable t) {
+                Log.e("ESD4D", "SR detail finalize failed, disabled", t);
+                srActive = false;
+                srDetailTexID = 0;
+                if (srHP != null) {
+                    try {
+                        srHP.close();
+                    } catch (Exception ignored) {
+                    }
+                    srHP = null;
+                }
+            }
+        }
+        if (srAccA != null) {
+            try {
+                srAccA.close();
+            } catch (Exception ignored) {
+            }
+            srAccA = null;
+        }
+        if (srAccB != null) {
+            try {
+                srAccB.close();
+            } catch (Exception ignored) {
+            }
+            srAccB = null;
+        }
+        srAccFinal = null;
+
+        // Bayer drizzle export for scaled/SR DNG: read back the consensus
+        // (value in the low half of each packed R32UI word, read downstream)
+        // with the same non-finite sanity gate. Export failure only drops DNG
+        // scaling.
+        if (srBayerActive && srBayOut != null && srBayerTarget != null) {
+            try {
+                srBayOut.BufferLoad();
+                ByteBuffer srBRead = srBayOut.textureBufferUintNative();
+                boolean srBOk = false;
+                if (srBRead != null) {
+                    // Direct-buffer short views default to BIG_ENDIAN; the
+                    // GPU wrote native halves (codebase-wide convention: set
+                    // native order before reading shorts/floats).
+                    srBRead.order(java.nio.ByteOrder.nativeOrder());
+                    srBRead.rewind();
+                    java.nio.ShortBuffer scan = srBRead.asShortBuffer();
+                    // Dense probe on the leading rows (full texel coverage,
+                    // both packed halves), then the same diagnostic split: the
+                    // strided whole-buffer scan read only one channel and
+                    // misread the pack layout, inflating phantom counts.
+                    int probeRows = Math.min(srBayerTarget.y, 16);
+                    int probeTexels = probeRows * srBayerTarget.x;
+                    int badNaN = 0;
+                    int badInf = 0;
+                    int checked = 0;
+                    int bandRows = 256;
+                    int bands = Math.max(1, (srBayerTarget.y + bandRows - 1) / bandRows);
+                    int[] bandBad = new int[bands];
+                    for (int t = 0; t < probeTexels; t++) {
+                        for (int cC = 0; cC < 2; cC++) {
+                            int v = scan.get(t * 2 + cC) & 0xFFFF;
+                            checked++;
+                            if ((v & 0x7C00) == 0x7C00) {
+                                if ((v & 0x03FF) == 0) {
+                                    badInf++;
+                                } else {
+                                    badNaN++;
+                                }
+                                int band = (t / srBayerTarget.x) / bandRows;
+                                if (band >= 0 && band < bands) bandBad[band]++;
+                            }
+                        }
+                    }
+                    long badFrac = checked > 0 ? ((long) (badNaN + badInf) * 100L) / checked : 0L;
+                    StringBuilder bb = new StringBuilder();
+                    for (int bi = 0; bi < bands; bi++) {
+                        if (bi > 0) bb.append('/');
+                        bb.append(bandBad[bi]);
+                    }
+                    Log.d("ESD4D", "Bayer drizzle probe: " + badNaN + " NaN + " + badInf
+                            + " Inf / " + checked + " (" + badFrac + "%) bands[" + bb + "]");
+                    if (badFrac < 25L) {
+                        // Sparse poison is healed at compact (neighbor fill);
+                        // dense faults above the fraction still fall back.
+                        srBRead.rewind();
+                        srBayerBase = srBRead;
+                        srBayerCPU = srBRead.asShortBuffer();
+                        srBayerCPUSize = new Point(srBayerTarget);
+                        srBOk = true;
+                    } else {
+                        Log.e("ESD4D", "Bayer drizzle export discarded: " + badNaN
+                                + " NaN + " + badInf + " Inf / " + checked
+                                + " (" + badFrac + "%) bands[" + bb + "]");
+                        com.particlesdevs.photoncamera.util.Allocator.free(srBRead);
+                    }
+                } else {
+                    Log.e("ESD4D", "Bayer drizzle export failed, legacy DNG path");
+                }
+                if (!srBOk) srBayerActive = false;
+            } catch (Throwable t) {
+                Log.e("ESD4D", "Bayer drizzle export failed, disabled", t);
+                srBayerActive = false;
+            }
+            try {
+                if (srBayA != null) srBayA.close();
+            } catch (Exception ignored) {
+            }
+            srBayA = null;
+            try {
+                if (srBayB != null) srBayB.close();
+            } catch (Exception ignored) {
+            }
+            srBayB = null;
+            srBayOut = null;
+        }
+
+        // 3b export: read back the drizzled accumulation for post (which
+        // normalizes by the weight plane), then release both GL textures well
+        // before the output readback. A strided sanity scan for non-finite
+        // halves discards corruption into a clean fallback. Export failure
+        // only drops post consumption.
+        if (srFullActive && srDriOut != null && srFullTarget != null) {
+            try {
+                if (gpuHandoff) {
+                    // Shared-group handoff: the accumulator texture crosses to
+                    // the post by name (this context stays alive until after
+                    // the post runs), so there is no readback and no ferry.
+                    srFullTexID = srDriOut.mTextureID;
+                    srFullSize = new Point(srFullTarget);
+                } else {
+                    // Both accumulators stay alive until after the readback:
+                    // releasing the idle one first saved ~400MB but put a
+                    // glDeleteFramebuffers/glDeleteTextures in the readback's
+                    // path, and any state it unbinds turns the export into a
+                    // silent passthrough. The memory estimate accounts for the
+                    // full peak instead.
+                    srDriOut.BufferLoad();
+                    ByteBuffer srFRead = srDriOut.textureBufferUintNative();
+                    boolean srFOk = false;
+                    if (srFRead != null) {
+                        srFRead.order(java.nio.ByteOrder.nativeOrder());
+                        srFRead.rewind();
+                        java.nio.ShortBuffer scan = srFRead.asShortBuffer();
+                        int n = scan.remaining();
+                        boolean finite = true;
+                        for (int i = 0; i < n; i += 256) {
+                            int v = scan.get(i) & 0xFFFF;
+                            if ((v & 0x7C00) == 0x7C00) {
+                                finite = false;
+                                break;
+                            }
+                        }
+                        if (finite) {
+                            srFRead.rewind();
+                            srFullBase = srFRead;
+                            srFullCPU = srFRead.asShortBuffer();
+                            srFullSize = new Point(srFullTarget);
+                            srFOk = true;
+                        } else {
+                            Log.e("ESD4D", "Full-SR export discarded: non-finite halves");
+                            com.particlesdevs.photoncamera.util.Allocator.free(srFRead);
+                        }
+                    } else {
+                        Log.e("ESD4D", "Full-SR export failed, post will pass through");
+                    }
+                    if (!srFOk) srFullActive = false;
+                }
+            } catch (Throwable t) {
+                Log.e("ESD4D", "Full-SR export failed, disabled", t);
+                srFullActive = false;
+                srFullTexID = 0;
+            }
+            try {
+                if (srDriA != null && srDriA.mTextureID != srFullTexID) srDriA.close();
+            } catch (Exception ignored) {
+            }
+            srDriA = null;
+            try {
+                if (srDriB != null && srDriB.mTextureID != srFullTexID) srDriB.close();
+            } catch (Exception ignored) {
+            }
+            srDriB = null;
+            srDriOut = null;
+        }
+
+        // The merge result stays normalized fp16 end-to-end: merge2o unpacks
+        // the packed quads straight into the R16F output buffer (no uint16
+        // re-encode); PostPipeline consumes it as-is and the uint16 DNG save
+        // re-encodes on the CPU (Allocator.createU16FromF16).
+        // Loop temporaries were already released above, ahead of the
+        // finalize/export readbacks.
+        long mergeOutT = System.currentTimeMillis();
+
         glProg.setLayout(tile,tile,1);
         glProg.useAssetProgram("merge/merge2o");
         glProg.setVar("cfaShift", cfaShift); // uniform: GLProg clears defines after each load
         glProg.setTexture("inTexture",base);
         glProg.setTexture("alignmentTexture", alignmentTex);
+        // SR detail: precomputed normalized highpass (srGain = strength;
+        // normalization lives in srhp), bound for merge2o and exported for
+        // post. Falls back to base so the sampler always has a binding
+        // (untouched while the gain is 0).
+        // When the full-SR drizzle *and its export* both succeeded
+        // (srFullActive survives to here), the merged frame must stay exactly
+        // as the non-SR path: the resolve replaces the band downstream. If
+        // the export failed, srFullActive is already false and the 3a layer
+        // is the only SR detail left, so apply it here as before.
+        GLTexture srBind = (srActive && srHP != null) ? srHP : base;
+        float srGain = (srActive && srHP != null && srAccumFrames > 0 && !srFullActive) ? srDetailStrength : 0f;
+        glProg.setVar("srGain", srGain);
+        glProg.setTexture("srDetail", srBind);
         result.BufferLoad();
         // Issue every block's draw + readback into the PBO ring, then tear
         // down CPU-side resources (AfterRun) while the transfers are in
@@ -1518,6 +2487,53 @@ public class ESD4D extends GLOneScript {
         super.close();
     }
 
+    /** This script's EGL context (null before setup). */
+    public GLContext getGLContext() {
+        return glOne != null ? glOne.glProcessing : null;
+    }
+
+    /**
+     * Probes whether a context created in this context's EGL share group can
+     * see its textures - the condition for handing the drizzle accumulator and
+     * the 3a detail texture to the post as texture names instead of CPU
+     * ferries. Creates a probe context, checks a probe texture's name there,
+     * then restores this context. Sets {@link #gpuHandoff}; false keeps the
+     * ferry paths.
+     */
+    public boolean probeGpuHandoff() {
+        gpuHandoff = false;
+        int[] tex = new int[1];
+        GLContext probe = null;
+        try {
+            GLContext self = getGLContext();
+            if (self == null || self.getEGLContext() == null) return false;
+            android.opengl.GLES30.glGenTextures(1, tex, 0);
+            if (tex[0] == 0) return false;
+            android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, tex[0]);
+            android.opengl.GLES30.glTexStorage2D(android.opengl.GLES30.GL_TEXTURE_2D, 1,
+                    android.opengl.GLES30.GL_RGBA16F, 4, 4);
+            probe = new GLContext(1, 1, self.getEGLContext());
+            gpuHandoff = android.opengl.GLES30.glIsTexture(tex[0]);
+        } catch (Throwable t) {
+            Log.e("ESD4D", "SR GPU handoff probe failed", t);
+            gpuHandoff = false;
+        } finally {
+            if (probe != null) {
+                try {
+                    probe.close();
+                } catch (Exception ignored) {
+                }
+            }
+            GLContext self = getGLContext();
+            if (self != null) self.makeCurrent();
+            if (tex[0] != 0) {
+                android.opengl.GLES30.glDeleteTextures(1, tex, 0);
+            }
+        }
+        Log.d("ESD4D", "SR GPU handoff: " + gpuHandoff);
+        return gpuHandoff;
+    }
+
     @Override
     public void AfterRun() {
         // The unpack staging cache is only needed while frames are uploaded
@@ -1531,6 +2547,47 @@ public class ESD4D extends GLOneScript {
         if (inputAlter != null) inputAlter.close();
         if (inputAlterAlt != null) inputAlterAlt.close();
         deleteUploadFences(alterUploadFences);
+        if (srAccA != null) {
+            srAccA.close();
+            srAccA = null;
+        }
+        if (srAccB != null) {
+            srAccB.close();
+            srAccB = null;
+        }
+        srAccFinal = null;
+        if (srHP != null) {
+            if (srHP.mTextureID != srDetailTexID) {
+                srHP.close();
+            }
+            srHP = null;
+        }
+        if (srDriA != null) {
+            srDriA.close();
+            srDriA = null;
+        }
+        if (srDriB != null) {
+            srDriB.close();
+            srDriB = null;
+        }
+        if (srBayA != null) {
+            srBayA.close();
+            srBayA = null;
+        }
+        if (srBayB != null) {
+            srBayB.close();
+            srBayB = null;
+        }
+        if (srRefTex != null) {
+            srRefTex.close();
+            srRefTex = null;
+        }
+        srRefSize = null;
+        if (srLumaTex != null) {
+            srLumaTex.close();
+            srLumaTex = null;
+        }
+        srLumaSize = null;
         if (alter != null) alter.close();
         if (inputBase != null) inputBase.close();
         if (baseDiff != null) baseDiff.close();

@@ -17,8 +17,13 @@ uniform float sigmaMaxPx;
 uniform float strength;
 uniform float sharpAmt;
 uniform float sharpWide;
+// Soft cap on the acutance term as a fraction of the local level (Weber-like):
+// see the halo-suppression comment at the term itself.
+uniform float acutRel;
 uniform float maxElong;
+uniform float gateExp;
 uniform vec2 scaleRatio;
+uniform int splitChroma;
 uniform int kernelRadius;
 uniform int debugMode;
 out vec4 Output;
@@ -37,6 +42,11 @@ out vec4 Output;
 // and det floored so near-extreme edge kernels cannot degenerate into
 // knife-thin ridges, and the sigma elongation is capped via maxElong.
 vec3 anisoCoeffs(vec2 uvPos, out vec2 sigmas) {
+    // Single tap, deliberately: smoothing this field (a 3x3 tent over the
+    // quarter-resolution map) bleeds the edge kernels' short-axis sigma up
+    // toward the neighbours' isotropic values and measurably softens every
+    // band. The mesh beat it removed is handled in the SR path instead, by
+    // replacing the aniso's upper band with the fused luma's.
     vec4 p = texture(KernelsMap, uvPos);
     float s1 = max(p.x, 1e-4);
     float s2 = max(p.y, 1e-4);
@@ -58,6 +68,11 @@ vec3 anisoCoeffs(vec2 uvPos, out vec2 sigmas) {
     } else if (s2 > s1 * maxElong) {
         s2 = s1 * maxElong;
     }
+    // Cap again after elongation: the long axis must not exceed the sigma cap
+    // either, or one elongated kernel spans many texture periods and erases
+    // them outright (a 6px mesh against an 8px kernel is simply gone).
+    s1 = min(s1, sigmaMaxPx);
+    s2 = min(s2, sigmaMaxPx);
     float det = max(1.0 - rho * rho, 1e-2);
     sigmas = vec2(s1, s2);
     return vec3(
@@ -124,11 +139,12 @@ void main() {
     vec2 sigmas;
     vec3 abc = anisoCoeffs(uv, sigmas);
     // Edge-confidence gate for the unsharp term: the used fraction of the
-    // allowed elongation. Near-isotropic kernels (flats, smooth gradients)
-    // get ~0 sharpening so noise and banding stay buried, while real edges
+    // allowed elongation, reshaped by gateExp (< 1 steepens so medium edges
+    // also sharpen; 1.0 is linear). Near-isotropic kernels (flats, smooth
+    // gradients) stay ~0 so noise and banding stay buried, while real edges
     // (elongation capped at maxElong) get the full sharpAmt.
     float elong = max(sigmas.x, sigmas.y) / max(min(sigmas.x, sigmas.y), 1e-4);
-    float gate = clamp((elong - 1.0) / max(maxElong - 1.0, 1e-4), 0.0, 1.0);
+    float gate = pow(clamp((elong - 1.0) / max(maxElong - 1.0, 1e-4), 0.0, 1.0), max(gateExp, 1e-3));
     float sharpWideEff = min(sharpWide, (0.5 * float(kernelRadius)) / sigmaMaxPx);
     vec3 abcWide = abc / (sharpWideEff * sharpWideEff);
     vec4 accN;
@@ -138,10 +154,43 @@ void main() {
         ? accN / accN.a
         : texture(InputBuffer, uvWin);
     vec4 sharp = aniso;
+    // The acutance's own addition (edge-gated, zero on flats and isotropic
+    // kernels) is handed downstream in the output alpha: the SR resolve adds
+    // it to the drizzled result, so the SR output gets the same edge
+    // sharpening as the Disabled render without inheriting the KernelNet
+    // reconstruction band (and its quantization mesh) that a band keep would.
+    float acutTerm = 0.0;
     if (sharpAmt > 0.0 && gate > 0.0) {
         vec4 wide = accW.a > 1e-5 ? accW / accW.a : aniso;
-        sharp = aniso + (sharpAmt * gate) * (aniso - wide);
+        vec4 d = aniso - wide;
+        // Halo suppression (Weber-like soft limit). A linear unsharp's
+        // overshoot grows with the edge contrast, so the strongest edges -
+        // exactly the highlight edges - got the worst halo. The tripod bench
+        // is unambiguous: the 2x JPEG carries a ~25-level dark notch on the
+        // pot edge that the drizzle's own raw (the 2x DNG, per-site greens)
+        // does not have, and the resolve is a convex mix while the tone curve
+        // is monotone, so this unsharp is provably the only term that can make
+        // it. The added term is limited to acutRel of the LOCAL level: the
+        // dark-side undershoot (the visible halo) is crushed where it is most
+        // visible, the bright side keeps a mild crispening, and fine texture
+        // (small differences) keeps the full amount. tanh is smooth - a hard
+        // clamp bands at highlight edges.
+        vec3 cap = max(vec3(acutRel) * aniso.rgb, vec3(1e-4));
+        vec4 added = vec4(cap * tanh((sharpAmt * gate) * d.rgb / cap), 0.0);
+        sharp = aniso + added;
+        acutTerm = dot(added.rgb, vec3(0.2126, 0.7152, 0.0722)) * clamp(strength, 0.0, 1.0);
     }
     vec4 bic = textureBicubicHardware(InputBuffer, uvWin);
-    Output = mix(bic, sharp, clamp(strength, 0.0, 1.0));
+    vec4 base = mix(bic, sharp, clamp(strength, 0.0, 1.0));
+    if (splitChroma != 0) {
+        // Luma from the guided reconstruction, chroma from bicubic: chroma
+        // planes are smooth, so the full 121-tap anisotropic filter buys
+        // nothing there and only risks color moire; keeping bicubic chroma
+        // also frees headroom for stronger luma acutance. (No lum709 macro in
+        // this shader, so the Rec.709 dot is spelled out.)
+        float yBase = dot(base.rgb, vec3(0.2126, 0.7152, 0.0722));
+        float yBic = dot(bic.rgb, vec3(0.2126, 0.7152, 0.0722));
+        base.rgb = vec3(yBase) + (bic.rgb - vec3(yBic));
+    }
+    Output = vec4(base.rgb, acutTerm);
 }

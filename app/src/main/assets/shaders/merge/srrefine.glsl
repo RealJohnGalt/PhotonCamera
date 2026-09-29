@@ -1,0 +1,91 @@
+
+#define LAYOUT //
+LAYOUT
+precision highp float;
+precision highp sampler2D;
+precision highp image2D;
+// Aligned alter and running base on the same packed grid. The residual is
+// their difference: mergeAlign's output is the alter, not the difference.
+uniform highp sampler2D diffPacked;
+uniform highp sampler2D basePacked;
+// Refinement cell size in packed texels (finer than the alignment atlas).
+uniform int srRefCell;
+// Per refinement cell: .xy = the sub-pixel motion correction that best explains
+// the residual as a translation (packed texels), .z = the residual RMS left
+// after applying it.
+layout(rgba16f, binding = 0) writeonly uniform highp image2D srRefOut;
+
+float pick4(vec4 v, int ch) {
+    return ch == 0 ? v.x : (ch == 1 ? v.y : (ch == 2 ? v.z : v.w));
+}
+
+void main() {
+    ivec2 cell = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outSize = imageSize(srRefOut);
+    if (cell.x >= outSize.x || cell.y >= outSize.y) return;
+    ivec2 dmax = textureSize(diffPacked, 0) - ivec2(1);
+    ivec2 c0 = cell * srRefCell;
+    float m00 = 0.0;
+    float m01 = 0.0;
+    float m11 = 0.0;
+    float vx = 0.0;
+    float vy = 0.0;
+    float rr = 0.0;
+    // Subsample the cell: the motion field is smooth across it and every
+    // second texel still gives 16 samples per channel. Gradients are central
+    // differences of the same CFA channel (its neighbours sit one packed
+    // texel away, i.e. 2 raw px), so g is per packed texel.
+    // Fixed 4x4 sample pattern per channel, independent of the cell size, so a
+    // finer grid keeps the same sample count and only trades cell area.
+    int step = max(1, srRefCell / 4);
+    for (int j = 0; j < srRefCell; j += step) {
+        for (int i = 0; i < srRefCell; i += step) {
+            ivec2 q = clamp(c0 + ivec2(i, j), ivec2(0), dmax);
+            vec4 ref = texelFetch(basePacked, q, 0);
+            vec4 alt = texelFetch(diffPacked, q, 0);
+            for (int c = 0; c < 4; c++) {
+                float gx = 0.5 * (pick4(texelFetch(basePacked,
+                        clamp(q + ivec2(1, 0), ivec2(0), dmax), 0), c)
+                        - pick4(texelFetch(basePacked,
+                        clamp(q - ivec2(1, 0), ivec2(0), dmax), 0), c));
+                float gy = 0.5 * (pick4(texelFetch(basePacked,
+                        clamp(q + ivec2(0, 1), ivec2(0), dmax), 0), c)
+                        - pick4(texelFetch(basePacked,
+                        clamp(q - ivec2(0, 1), ivec2(0), dmax), 0), c));
+                float r = pick4(alt, c) - pick4(ref, c);
+                m00 += gx * gx;
+                m01 += gx * gy;
+                m11 += gy * gy;
+                vx += gx * r;
+                vy += gy * r;
+                rr += r * r;
+            }
+        }
+    }
+    vec2 delta = vec2(0.0);
+    float det = m00 * m11 - m01 * m01;
+    // Only correct when the gradients constrain both axes (a 1D edge leaves
+    // the along-edge component unobservable) and when the residual is at
+    // least partly explained by a translation; the explained fraction is the
+    // confidence, so noise, aliasing and deformation are not "corrected".
+    if (det > 0.1 * max(m00 * m11, 1e-12) && m00 + m11 > 1e-4) {
+        float invDet = 1.0 / det;
+        vec2 d = vec2(-(m11 * vx - m01 * vy) * invDet,
+                -(m00 * vy - m01 * vx) * invDet);
+        float conf = clamp((vx * d.x + vy * d.y) / max(rr, 1e-12), 0.0, 1.0);
+        // Squared confidence: noise-driven fits sit around 0.2-0.4 (their
+        // "explained" fraction is mostly the fit's own freedom) while real
+        // motion sits at 0.8+. Squaring suppresses the former sharply
+        // (0.04-0.16) and keeps the latter (0.64+) - benched: the linear form
+        // left noise warping the sampling lattice on static bursts.
+        delta = clamp(d, vec2(-0.5), vec2(0.5)) * conf * conf;
+    }
+    // .z = residual RMS left after the correction: what the translation model
+    // cannot explain (deformation, moving subjects). The drizzle's trust gate
+    // uses it in place of the pre-refinement residual, so a frame that is
+    // merely misregistered - which the correction fixes - is not rejected.
+    float ns = float((srRefCell / step) * (srRefCell / step) * 4);
+    float unexplained = max(rr - (vx * delta.x + vy * delta.y), 0.0);
+    float resid = sqrt(unexplained / max(ns, 1.0));
+    imageStore(srRefOut, cell, vec4(delta, resid, 0.0));
+}
