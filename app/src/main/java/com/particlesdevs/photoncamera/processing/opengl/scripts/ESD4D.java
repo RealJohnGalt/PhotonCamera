@@ -1615,8 +1615,12 @@ public class ESD4D extends GLOneScript {
                 srAspect = com.particlesdevs.photoncamera.app.PhotonCamera.getSettings().aspect169 && !srZoomed;
             } catch (Exception ignored) {
             }
+            // FlowNet is supported: srwarp samples the dense flow directly
+            // (srFlowAlign), keeping the continuous displacement where the
+            // merge's own warp truncates it to integers. The identity ("off")
+            // atlas carries no motion, so the drizzle stays declined there.
             if (srFullEnable && images != null && images.size() > 1
-                    && srScaleOk && !srFlowAlign && !srOffAlign && !srAspect
+                    && srScaleOk && !srOffAlign && !srAspect
                     && parameters != null && parameters.rawSize != null
                     && parameters.rawSize.x > 0 && parameters.rawSize.y > 0
                     && alignmentTex != null && base != null
@@ -1679,6 +1683,7 @@ public class ESD4D extends GLOneScript {
                 glProg.setTextureCompute("srDriOut", srDriA, true);
                 glProg.setVar("srShift", 0, 0);
                 glProg.setVar("srAlignSize", parameters.alignmentSize);
+                glProg.setVar("srFlowAlign", Objects.equals(alignerSelect, "flownet") ? 1 : 0);
                 glProg.setVar("srRawHalf", new Point(parameters.rawSize.x / 2, parameters.rawSize.y / 2));
                 glProg.setVar("srCfa", cfaShift);
                 glProg.setVar("srFullPerOut", srFullW / (float) tgt.x, srFullH / (float) tgt.y);
@@ -1780,6 +1785,7 @@ public class ESD4D extends GLOneScript {
                 glProg.setTextureCompute("srBayOut", srBayA, true);
                 glProg.setVar("srShift", 0, 0);
                 glProg.setVar("srAlignSize", parameters.alignmentSize);
+                glProg.setVar("srFlowAlign", Objects.equals(alignerSelect, "flownet") ? 1 : 0);
                 glProg.setVar("srRawHalf", new Point(parameters.rawSize.x / 2, parameters.rawSize.y / 2));
                 glProg.setVar("srCfa", cfaShift);
                 glProg.setVar("srFullPerOut", srBayerW / (float) tgt.x, srBayerH / (float) tgt.y);
@@ -2001,6 +2007,7 @@ public class ESD4D extends GLOneScript {
                     glProg.setTextureCompute("srDriOut", srDriNext, true);
                     glProg.setVar("srShift", shift);
                     glProg.setVar("srAlignSize", parameters.alignmentSize);
+                    glProg.setVar("srFlowAlign", Objects.equals(alignerSelect, "flownet") ? 1 : 0);
                     glProg.setVar("srRawHalf", new Point(parameters.rawSize.x / 2, parameters.rawSize.y / 2));
                     glProg.setVar("srCfa", cfaShift);
                     glProg.setVar("srFullPerOut", srFullW / (float) srFullTarget.x, srFullH / (float) srFullTarget.y);
@@ -2045,6 +2052,7 @@ public class ESD4D extends GLOneScript {
                     glProg.setTextureCompute("srBayOut", srBayNext, true);
                     glProg.setVar("srShift", shift);
                     glProg.setVar("srAlignSize", parameters.alignmentSize);
+                    glProg.setVar("srFlowAlign", Objects.equals(alignerSelect, "flownet") ? 1 : 0);
                     glProg.setVar("srRawHalf", new Point(parameters.rawSize.x / 2, parameters.rawSize.y / 2));
                     glProg.setVar("srCfa", cfaShift);
                     glProg.setVar("srFullPerOut", srBayerW / (float) srBayerTarget.x, srBayerH / (float) srBayerTarget.y);

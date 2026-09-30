@@ -21,6 +21,9 @@ uniform highp sampler2D basePacked;
 // base, packed texels) and its strength.
 uniform highp sampler2D srRefMap;
 uniform float srRefine;
+// 1 = the alignment texture is FlowNet's dense low-res flow, not the cell
+// atlas. See the motion block in main().
+uniform int srFlowAlign;
 // Per-frame atlas tile offset, alignment grid size, rawSize/2: identical
 // values and convention to the mergeAlign call for this frame.
 uniform ivec2 srShift;
@@ -135,14 +138,22 @@ void main() {
     vec2 m = vec2(0.0);
     if (srZeroMotion < 0.5) {
         vec2 A = p / (float(SR_TILE_AL) / float(SR_TILE));
-        ivec2 c0 = ivec2(floor(A));
-        vec2 f = A - vec2(c0);
-        ivec2 cmax = srAlignSize - ivec2(1);
-        vec2 m00 = srCellMotion(clamp(c0, ivec2(0), cmax));
-        vec2 m10 = srCellMotion(clamp(c0 + ivec2(1, 0), ivec2(0), cmax));
-        vec2 m01 = srCellMotion(clamp(c0 + ivec2(0, 1), ivec2(0), cmax));
-        vec2 m11 = srCellMotion(clamp(c0 + ivec2(1, 1), ivec2(0), cmax));
-        m = mix(mix(m00, m10, f.x), mix(m01, m11, f.x), f.y);
+        if (srFlowAlign == 1) {
+            // FlowNet: dense low-res flow instead of the cell atlas (see
+            // srwarp; same stretch bake, same rawHalf-px units), bilinear at
+            // this packed position keeps the continuous sub-pixel motion.
+            vec2 flowUv = clamp((p + vec2(0.5)) / vec2(srRawHalf), vec2(0.0), vec2(1.0));
+            m = texture(alignmentTexture, flowUv).xy;
+        } else {
+            ivec2 c0 = ivec2(floor(A));
+            vec2 f = A - vec2(c0);
+            ivec2 cmax = srAlignSize - ivec2(1);
+            vec2 m00 = srCellMotion(clamp(c0, ivec2(0), cmax));
+            vec2 m10 = srCellMotion(clamp(c0 + ivec2(1, 0), ivec2(0), cmax));
+            vec2 m01 = srCellMotion(clamp(c0 + ivec2(0, 1), ivec2(0), cmax));
+            vec2 m11 = srCellMotion(clamp(c0 + ivec2(1, 1), ivec2(0), cmax));
+            m = mix(mix(m00, m10, f.x), mix(m01, m11, f.x), f.y);
+        }
         m = clamp(m, vec2(-srMotionMax), vec2(srMotionMax));
         // Sub-pixel alignment refinement (bilinear over the same cell grid),
         // gated by the atlas motion: on a static burst the LK residual is
