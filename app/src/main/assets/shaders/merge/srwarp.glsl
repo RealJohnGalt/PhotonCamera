@@ -151,6 +151,7 @@ void main() {
     // keeps the sub-pixel residuals that super-resolution depends on.
     vec2 m = vec2(0.0);
     vec4 refv = vec4(0.0);
+    float corrLoc = 0.0;
     if (srZeroMotion < 0.5) {
         vec2 A = p / (float(SR_TILE_AL) / float(SR_TILE));
         if (srFlowAlign == 1) {
@@ -176,6 +177,21 @@ void main() {
         // the fusion's sampling positions are only as good as the alignment.
         refv = texture(srRefMap, clamp(
                 (A + vec2(0.5)) / vec2(srAlignSize), vec2(0.0), vec2(1.0)));
+        // Locality of the correction: an atlas/flow error is smooth across
+        // neighbouring refine cells (so a large but uniform correction is
+        // still alignment), while a moving subject yields a correction that
+        // diverges from its neighbours. Only the localized part counts as
+        // motion in the trust gate below.
+        {
+            vec2 ruv = clamp((A + vec2(0.5)) / vec2(srAlignSize), vec2(0.0), vec2(1.0));
+            vec2 rstep = vec2(1.0) / vec2(textureSize(srRefMap, 0));
+            vec2 nbr = 0.25 * (
+                    texture(srRefMap, clamp(ruv + vec2(rstep.x, 0.0), vec2(0.0), vec2(1.0))).xy
+                    + texture(srRefMap, clamp(ruv - vec2(rstep.x, 0.0), vec2(0.0), vec2(1.0))).xy
+                    + texture(srRefMap, clamp(ruv + vec2(0.0, rstep.y), vec2(0.0), vec2(1.0))).xy
+                    + texture(srRefMap, clamp(ruv - vec2(0.0, rstep.y), vec2(0.0), vec2(1.0))).xy);
+            corrLoc = length(refv.xy - nbr);
+        }
         // Apply the correction only where the frame actually moved: on a
         // static burst the LK residual is noise, its fit is a random
         // translation, and applying it warps the sampling lattice randomly
@@ -248,7 +264,25 @@ void main() {
         // per-cell translation correction (refv.z): a frame that is merely
         // misregistered is fixed by the correction and must not be rejected,
         // while deformation and moving subjects still read as large.
-        float lf = srRefine > 0.5 ? refv.z : dot(abs(rMean), vec3(1.0 / 3.0));
+        //
+        // But the correction can also explain *moving content* - motion and
+        // misregistration are both locally translational - and a frame whose
+        // subject was "corrected" into the accumulated base leaves a ghost,
+        // which is why SR has been markedly less motion-robust than the merge
+        // (the merge's integer warp has no such per-cell excuse and its
+        // combine rejects the residual instead). Distinguish by what the
+        // correction is worth: misregistration is sub-pixel, so any cell
+        // whose correction exceeds half a raw pixel is treated as motion and
+        // judged by the pre-refine residual, exactly like the unrefined path.
+        float preRes = dot(abs(rMean), vec3(1.0 / 3.0));
+        // Motion signal: a correction beyond half a raw pixel (more than
+        // atlas misregistration produces) *and* localized - diverging from
+        // its neighbours' corrections - is a moving subject warped into the
+        // base, so that frame's vote is judged by the pre-refine residual.
+        // Smooth corrections keep the refinement's benefit at any magnitude,
+        // so recovering genuine alignment never discards real detail.
+        float motionness = step(0.25, length(refv.xy)) * smoothstep(0.1, 0.3, corrLoc);
+        float lf = srRefine > 0.5 ? mix(refv.z, preRes, motionness) : preRes;
         float mag = dot(rMag, vec3(1.0 / 3.0));
         w = max(1.0 / (1.0 + (lf / band) * (lf / band)), srTrustFloor)
                 / (1.0 + pow(mag / (16.0 * band), 4.0));
