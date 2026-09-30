@@ -458,6 +458,45 @@ public class ESD4D extends GLOneScript {
      * per shot. The refinement pass itself runs per alter; any failure leaves
      * the map null and the drizzles use the raw atlas motion.
      */
+    /**
+     * Guided upsample of FlowNet's dense flow to a frame-covering motion
+     * field (merge/srflowresample) using the running base as the guidance
+     * image: the same edge-aware local linear fit mergeAlignFlow applies for
+     * its own per-pixel warp. The drizzles sample the result bilinearly, so
+     * their motion follows image edges instead of blending across them.
+     * Rebuilt per alter frame; the texture is reused across frames.
+     */
+    private boolean dispatchSrFlowResample(GLTexture flowTex) {
+        int gw = Math.max(1, parameters.rawSize.x / 4);
+        int gh = Math.max(1, parameters.rawSize.y / 4);
+        if (srFlowGuided == null || srFlowGuidedSize == null
+                || srFlowGuidedSize.x != gw || srFlowGuidedSize.y != gh) {
+            if (srFlowGuided != null) {
+                srFlowGuided.close();
+            }
+            srFlowGuided = new GLTexture(new Point(gw, gh),
+                    new GLFormat(GLFormat.DataType.FLOAT_16, 4), null, GL_LINEAR, GL_CLAMP_TO_EDGE);
+            srFlowGuidedSize = new Point(gw, gh);
+        }
+        glProg.setLayout(8, 8, 1);
+        glProg.useAssetProgram("merge/srflowresample", true);
+        glProg.setTexture("flowIn", flowTex);
+        glProg.setTexture("guidePacked", base);
+        glProg.setVar("packedSize", new Point(parameters.rawSize.x / 2, parameters.rawSize.y / 2));
+        glProg.setTextureCompute("flowOut", srFlowGuided, true);
+        glProg.computeAuto(srFlowGuided.mSize, 1);
+        return true;
+    }
+
+    /**
+     * Alignment texture the SR drizzles read: the guided flow when FlowNet
+     * produced one this shot, the cell atlas otherwise.
+     */
+    private GLTexture srAlignTex() {
+        return Objects.equals(alignerSelect, "flownet") && srFlowGuided != null
+                ? srFlowGuided : alignmentTex;
+    }
+
     private void ensureSrRefMap() {
         if (srRefine <= 0f || srRefTex != null || parameters == null
                 || parameters.alignmentSize == null
@@ -571,6 +610,13 @@ public class ESD4D extends GLOneScript {
      */
     GLTexture srRefTex;
     Point srRefSize;
+    /**
+     * Guided (edge-aware) resample of FlowNet's dense flow, rebuilt per alter
+     * from the running base as the guide (merge/srflowresample). The drizzles
+     * sample this instead of the raw low-res flow; null outside FlowNet.
+     */
+    GLTexture srFlowGuided;
+    Point srFlowGuidedSize;
     /** True once the Bayer accumulators are allocated for this shot. */
     boolean srBayerActive;
     /** Bayer drizzle export (target Bayer halves, scalar in .r); may be null. */
@@ -1676,7 +1722,7 @@ public class ESD4D extends GLOneScript {
                 glProg.setTexture("srLumaTex", srLumaTex);
                 glProg.setTexture("diffPacked", base);
                 glProg.setTexture("basePacked", base);
-                glProg.setTexture("alignmentTexture", alignmentTex);
+                glProg.setTexture("alignmentTexture", srAlignTex());
                 glProg.setTexture("srRefMap", srRefTex != null ? srRefTex : base);
                 glProg.setVar("srRefine", srRefTex != null ? srRefine : 0f);
                 glProg.setTextureCompute("srDriIn", srDriB, false);
@@ -1777,7 +1823,7 @@ public class ESD4D extends GLOneScript {
                 glProg.setLayout(tile, tile, 1);
                 glProg.useAssetProgram("merge/srbayer", true);
                 glProg.setTexture("alterPacked", base);
-                glProg.setTexture("alignmentTexture", alignmentTex);
+                glProg.setTexture("alignmentTexture", srAlignTex());
                 glProg.setTexture("diffPacked", base);
                 glProg.setTexture("srRefMap", srRefTex != null ? srRefTex : base);
                 glProg.setVar("srRefine", srRefTex != null ? srRefine : 0f);
@@ -1850,6 +1896,9 @@ public class ESD4D extends GLOneScript {
                 // in time (one pair at a time, no stored flow fields). Must run
                 // before the mergeAlign program is bound below.
                 flowTex = flowNetAlignment.computeFlow(ind);
+                // Guided upsample of the dense flow against the running
+                // base: the SR drizzles below sample this edge-aware field.
+                dispatchSrFlowResample(flowTex);
             }
 
             // This frame's only native reads are the two synchronous uploads
@@ -2000,7 +2049,7 @@ public class ESD4D extends GLOneScript {
                     glProg.setTexture("srLumaTex", srLumaTex);
                     glProg.setTexture("diffPacked", baseDiff);
                     glProg.setTexture("basePacked", base);
-                    glProg.setTexture("alignmentTexture", alignmentTex);
+                    glProg.setTexture("alignmentTexture", srAlignTex());
                     glProg.setTexture("srRefMap", srRefTex != null ? srRefTex : base);
                     glProg.setVar("srRefine", srRefTex != null ? srRefine : 0f);
                     glProg.setTextureCompute("srDriIn", srDriIn, false);
@@ -2044,7 +2093,7 @@ public class ESD4D extends GLOneScript {
                     glProg.setLayout(tile, tile, 1);
                     glProg.useAssetProgram("merge/srbayer", true);
                     glProg.setTexture("alterPacked", alter);
-                    glProg.setTexture("alignmentTexture", alignmentTex);
+                    glProg.setTexture("alignmentTexture", srAlignTex());
                     glProg.setTexture("diffPacked", baseDiff);
                     glProg.setTexture("srRefMap", srRefTex != null ? srRefTex : base);
                     glProg.setVar("srRefine", srRefTex != null ? srRefine : 0f);
@@ -2594,6 +2643,11 @@ public class ESD4D extends GLOneScript {
             srRefTex = null;
         }
         srRefSize = null;
+        if (srFlowGuided != null) {
+            srFlowGuided.close();
+            srFlowGuided = null;
+        }
+        srFlowGuidedSize = null;
         if (srLumaTex != null) {
             srLumaTex.close();
             srLumaTex = null;
