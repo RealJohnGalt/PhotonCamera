@@ -19,6 +19,22 @@ float pick4(vec4 v, int ch) {
     return ch == 0 ? v.x : (ch == 1 ? v.y : (ch == 2 ? v.z : v.w));
 }
 
+// Phase-stable same-channel sample: the 2x2 packed-texel block is four sites
+// of the same colour, two packed texels apart in the channel's own plane.
+// The running base de-aliases as frames accumulate, so at the pixel scale it
+// diverges from any single frame - a residual measured there grows with the
+// frame count, the trust gate then rejects the frames whose detail the
+// fusion is supposed to add, and the more frames, the more complete that
+// rejection is (the count inversion: 8 frames ahead of the non-SR render,
+// 38 behind). Structure - misregistration, deformation, motion - survives
+// this average; the sub-pixel phase pattern does not.
+float psamp(sampler2D tex, ivec2 q, int c, ivec2 dmax) {
+    return 0.25 * (pick4(texelFetch(tex, clamp(q, ivec2(0), dmax), 0), c)
+            + pick4(texelFetch(tex, clamp(q + ivec2(2, 0), ivec2(0), dmax), 0), c)
+            + pick4(texelFetch(tex, clamp(q + ivec2(0, 2), ivec2(0), dmax), 0), c)
+            + pick4(texelFetch(tex, clamp(q + ivec2(2, 2), ivec2(0), dmax), 0), c));
+}
+
 void main() {
     ivec2 cell = ivec2(gl_GlobalInvocationID.xy);
     ivec2 outSize = imageSize(srRefOut);
@@ -41,18 +57,12 @@ void main() {
     for (int j = 0; j < srRefCell; j += step) {
         for (int i = 0; i < srRefCell; i += step) {
             ivec2 q = clamp(c0 + ivec2(i, j), ivec2(0), dmax);
-            vec4 ref = texelFetch(basePacked, q, 0);
-            vec4 alt = texelFetch(diffPacked, q, 0);
             for (int c = 0; c < 4; c++) {
-                float gx = 0.5 * (pick4(texelFetch(basePacked,
-                        clamp(q + ivec2(1, 0), ivec2(0), dmax), 0), c)
-                        - pick4(texelFetch(basePacked,
-                        clamp(q - ivec2(1, 0), ivec2(0), dmax), 0), c));
-                float gy = 0.5 * (pick4(texelFetch(basePacked,
-                        clamp(q + ivec2(0, 1), ivec2(0), dmax), 0), c)
-                        - pick4(texelFetch(basePacked,
-                        clamp(q - ivec2(0, 1), ivec2(0), dmax), 0), c));
-                float r = pick4(alt, c) - pick4(ref, c);
+                float gx = 0.5 * (psamp(basePacked, q + ivec2(1, 0), c, dmax)
+                        - psamp(basePacked, q - ivec2(1, 0), c, dmax));
+                float gy = 0.5 * (psamp(basePacked, q + ivec2(0, 1), c, dmax)
+                        - psamp(basePacked, q - ivec2(0, 1), c, dmax));
+                float r = psamp(diffPacked, q, c, dmax) - psamp(basePacked, q, c, dmax);
                 m00 += gx * gx;
                 m01 += gx * gy;
                 m11 += gy * gy;
