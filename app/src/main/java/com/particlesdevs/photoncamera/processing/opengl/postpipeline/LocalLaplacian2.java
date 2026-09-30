@@ -89,7 +89,7 @@ public class LocalLaplacian2 extends Node {
     boolean enabled;
 
     @Tunable(title = "Detail", description = "Local contrast amplification near the local average; 0 is neutral",
-            category = "LLF", min = -1.0f, max = 4.0f, defaultValue = 0.15f, step = 0.05f)
+            category = "LLF", min = -1.0f, max = 4.0f, defaultValue = 0.35f, step = 0.05f)
     float detail;
 
     @Tunable(title = "Highlights", description = "Slope for details darker than the local average; below 1 compresses",
