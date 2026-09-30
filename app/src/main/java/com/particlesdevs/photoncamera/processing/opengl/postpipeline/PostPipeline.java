@@ -73,6 +73,18 @@ public class PostPipeline extends GLBasePipeline {
      */
     public float adaptiveWhitePoint = 1.0f;
     /**
+     * Scene metrics measured by {@link AutoExposureCurve} for the adaptive LLF
+     * detail ({@link LlfAdaptiveDetail}) and reset every shot. Spreads are the
+     * display-domain p2/p5..p98 channel crossing; -1 = unmeasured (no AE this
+     * pipeline, or a failed measurement) and the LLF falls back to its floor.
+     */
+    public float sceneSpread = -1f;
+    public float sceneSpreadRobust = -1f;
+    /** Fraction of the AE response above display white; 0 = neutral. */
+    public float sceneClippedFrac = 0f;
+    /** Fraction of samples carrying local detail; -1 = unmeasured. */
+    public float sceneDetailDensity = -1f;
+    /**
      * Effective clip level of the CFA buffer produced by Bayer2Float: 1.0
      * when nothing is reconstructed, otherwise the white-balanced clip
      * extent (1/min(whitePoint)) that the inpaint-opposed reconstruction can
@@ -471,6 +483,10 @@ public class PostPipeline extends GLBasePipeline {
         adaptiveWhitePoint = 1.0f;
         rawClipLevel = 1.0f;
         exposureCurve = null;
+        sceneSpread = -1f;
+        sceneSpreadRobust = -1f;
+        sceneClippedFrac = 0f;
+        sceneDetailDensity = -1f;
         Point targetSliced = Parameters.computeResizedTarget(parameters, rawSliced);
         Point rotatedSize = getRotatedCoords(targetSliced);
         captureOutputSize = new Point(rotatedSize);
