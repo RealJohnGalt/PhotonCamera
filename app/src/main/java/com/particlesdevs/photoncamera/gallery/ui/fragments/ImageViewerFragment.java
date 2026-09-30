@@ -127,6 +127,7 @@ public class ImageViewerFragment extends Fragment implements ImageAdapter.HdrSta
     private int exifEffectHeight;
     private long exifBlurLastCaptureMs;
     private final Handler exifBlurHandler = new Handler(Looper.getMainLooper());
+    private final Handler histogramHandler = new Handler(Looper.getMainLooper());
     private final Runnable exifBlurCaptureRunnable = this::captureExifBlur;
     private final Runnable exifBlurSettleRunnable = () -> captureExifBlur();
     private String mode;
@@ -1059,7 +1060,7 @@ public class ImageViewerFragment extends Fragment implements ImageAdapter.HdrSta
     }
 
     private void isHistogramLoading(boolean loading) {
-        new Handler(Looper.getMainLooper()).post(() -> {
+        histogramHandler.post(() -> {
             if (fragmentGalleryImageViewerBinding == null || fragmentGalleryImageViewerBinding.exifLayout == null) return;
             if (loading) fragmentGalleryImageViewerBinding.exifLayout.histoLoading.setVisibility(View.VISIBLE);
             else fragmentGalleryImageViewerBinding.exifLayout.histoLoading.setVisibility(View.INVISIBLE);

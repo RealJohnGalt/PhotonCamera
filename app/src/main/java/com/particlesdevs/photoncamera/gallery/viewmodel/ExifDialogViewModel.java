@@ -4,24 +4,12 @@ package com.particlesdevs.photoncamera.gallery.viewmodel;
 import android.annotation.SuppressLint;
 import android.app.Application;
 import android.content.ContentResolver;
-import android.graphics.Bitmap;
-import android.graphics.drawable.Drawable;
-import android.os.Handler;
-import android.os.Looper;
-import android.util.AttributeSet;
 import android.util.Rational;
 
 import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.exifinterface.media.ExifInterface;
 import androidx.lifecycle.AndroidViewModel;
 
-import com.bumptech.glide.Glide;
-import com.bumptech.glide.load.engine.DiskCacheStrategy;
-import com.bumptech.glide.request.RequestOptions;
-import com.bumptech.glide.request.target.CustomTarget;
-import com.bumptech.glide.request.transition.Transition;
-import com.bumptech.glide.signature.ObjectKey;
 import com.particlesdevs.photoncamera.api.ParseExif;
 import com.particlesdevs.photoncamera.gallery.files.ImageFile;
 import com.particlesdevs.photoncamera.gallery.files.MediaFile;
@@ -44,16 +32,14 @@ import java.util.Locale;
 public class ExifDialogViewModel extends AndroidViewModel {
     private static final String TAG = ExifDialogViewModel.class.getSimpleName();
     private final ExifDialogModel exifDialogModel;
-    private final Handler histoHandler = new Handler(Looper.getMainLooper());
-    private Runnable histoRunnable;
     /**
      * Guards histogram loads against swipe races: each request bumps the
      * generation and only the latest generation may publish its model, so a
-     * slow (or cached-fast) load for a previous image can never overwrite the
-     * current one.
+     * slow load for a previous image can never overwrite the current one.
      */
     private int histogramGeneration;
-    private CustomTarget<Bitmap> histogramTarget;
+    /** Single histogram computer for this ViewModel; owns its GL context. */
+    private Histogram histogram;
 
     public ExifDialogViewModel(Application application) {
         super(application);
@@ -152,51 +138,29 @@ public class ExifDialogViewModel extends AndroidViewModel {
      * check for more detail {@link com.particlesdevs.photoncamera.gallery.binding.CustomBinding#updateHistogram(Histogram, Histogram.HistogramModel)}
      */
     public void updateHistogramView(ImageFile imageFile) {
-        Histogram histogram = new Histogram(getApplication().getBaseContext(), null);
-        if (histoRunnable != null) {
-            histoHandler.removeCallbacks(histoRunnable);
-        }
-        // Cancel any in-flight load for the previous image and clear its bars
-        // immediately so stale data is never shown while the new load runs.
-        if (histogramTarget != null) {
-            try {
-                Glide.with(getApplication()).clear(histogramTarget);
-            } catch (Exception ignored) {}
-            histogramTarget = null;
-        }
+        // Clear the bars immediately so stale data is never shown while the new
+        // analysis runs, and bump the generation so only the latest request may
+        // publish its model.
         exifDialogModel.setHistogramModel(null);
         final int generation = ++histogramGeneration;
-        histoHandler.post(histoRunnable = () -> {
-                    if (generation != histogramGeneration) {
-                        return;
-                    }
-                    histogramTarget = new CustomTarget<Bitmap>() {
-                        @Override
-                        public void onResourceReady(@NonNull Bitmap resource, @Nullable Transition<? super Bitmap> transition) {
-                            if (generation != histogramGeneration) {
-                                return;
-                            }
-                            histogramTarget = null;
-                            exifDialogModel.setHistogramModel(histogram.analyze(resource));
-                        }
+        histogram().analyzeAsync(getApplication().getContentResolver(), imageFile.getFileUri(), model -> {
+            if (generation != histogramGeneration) {
+                return;
+            }
+            exifDialogModel.setHistogramModel(model);
+        });
+    }
 
-                        @Override
-                        public void onLoadCleared(@Nullable Drawable placeholder) {
-                            if (histogramTarget == this) {
-                                histogramTarget = null;
-                            }
-                        }
-                    };
-                    Glide.with(getApplication())
-                            .asBitmap()
-                            .load(imageFile.getFileUri())
-                            .apply(new RequestOptions()
-                                    .diskCacheStrategy(DiskCacheStrategy.RESOURCE)
-                                    .signature(new ObjectKey("hist" + imageFile.getDisplayName() + imageFile.getLastModified()))
-                                    .override(800) //800*800
-                                    .fitCenter().useUnlimitedSourceGeneratorsPool(true))
-                            .into(histogramTarget);
-                });
+    /**
+     * The histogram computer is reused for the ViewModel's lifetime so its GL
+     * context is created (and later destroyed) exactly once, instead of once
+     * per image.
+     */
+    private Histogram histogram() {
+        if (histogram == null) {
+            histogram = new Histogram(getApplication(), null);
+        }
+        return histogram;
     }
 
     private String getDateText(String savedDate) {
@@ -214,5 +178,10 @@ public class ExifDialogViewModel extends AndroidViewModel {
     @Override
     protected void onCleared() {
         super.onCleared();
+        histogramGeneration++;
+        if (histogram != null) {
+            histogram.close();
+            histogram = null;
+        }
     }
 }
