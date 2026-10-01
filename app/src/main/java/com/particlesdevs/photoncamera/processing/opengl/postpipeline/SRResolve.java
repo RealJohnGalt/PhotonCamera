@@ -82,6 +82,10 @@ public final class SRResolve extends Node {
     // Frozen band-body uniforms (set in prepare, re-issued by renderTile).
     private float srNoiseSVal, srNoiseOVal;
     private float[] srBlackVal;
+    // Raw px per output px (the drizzle's expansion), for the MTF
+    // compensation's band-edge cutoff: (0.5,0.5) at a 2x output, (2/3,2/3)
+    // at 1.5x.
+    private float srPerOutX = 1f, srPerOutY = 1f;
 
     @Override
     public void Run() {
@@ -138,6 +142,12 @@ public final class SRResolve extends Node {
             releaseFerry(pp);
             WorkingTexture = previousNode.WorkingTexture;
             return false;
+        }
+        // Raw px per output px: the MTF compensation's cutoff tracks the
+        // raw's Nyquist through this.
+        if (basePipeline.mParameters != null && basePipeline.mParameters.rawSize != null) {
+            srPerOutX = basePipeline.mParameters.rawSize.x / (float) outSize.x;
+            srPerOutY = basePipeline.mParameters.rawSize.y / (float) outSize.y;
         }
         if (sharedAcc != 0 && !android.opengl.GLES30.glIsTexture(sharedAcc)) {
             // The shared name is not visible here (the EGL group silently fell
@@ -201,6 +211,7 @@ public final class SRResolve extends Node {
         glProg.setVar("srDetail", srResolveDetail);
         glProg.setVar("srAcutance", srResolveAcutance);
         glProg.setVar("srBlack", srBlackVal);
+        glProg.setVar("srFullPerOut", srPerOutX, srPerOutY);
         glProg.setVar("u_inOrigin", 0, inOriginY);
         glProg.setVar("u_tileOrigin", 0, outOriginY);
         WorkingTexture = outTile;

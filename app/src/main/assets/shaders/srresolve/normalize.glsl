@@ -28,6 +28,10 @@ uniform float srAcutance;
 // Per-channel ABLC black levels applied to the post image (0 when ABLC is
 // off). The fused luma arrives in the pre-ABLC packed domain.
 uniform vec3 srBlack;
+// Raw px per output px per axis (the drizzle's expansion: 0.5 at a 2x
+// output, 2/3 at 1.5x). Places the MTF compensation's cutoff exactly on the
+// raw's Nyquist in output pixels (see the boost in main()).
+uniform vec2 srFullPerOut;
 out vec4 Output;
 
 void main() {
@@ -63,7 +67,6 @@ void main() {
     // small differences (the fused's noise, the KernelNet's errors) while the
     // large ones - real level and detail - pass. No box; the only split is
     // the fallback's smooth low-pass below.
-    float hp = yFusedPost - yRef;
     // Wiener (soft) shrinkage against the local noise floor: one-frame sigma
     // from the noise model over the square root of the accumulated weight
     // (the fused luma is a weighted average of that many samples). The model
@@ -73,8 +76,6 @@ void main() {
     // noise and the shrinkage eats faint texture (small text strokes) while
     // strong edges pass: exactly the wrong selection.
     float sigma = 0.5 * sqrt(max(srNoiseS * yRef + srNoiseO, 1e-12) / max(c.y, 1.0));
-    float t = srDetail * sigma / max(abs(hp), 1e-9);
-    float m = max(0.0, 1.0 - t * t);
     // Mesh-proof fallback. Where the shrinkage suppresses (m < 1: flats and
     // fine texture), do NOT fall back to the aniso's raw luma: the aniso
     // carries the KernelNet map's texel-scale mottle (the map is emitted at
@@ -91,16 +92,53 @@ void main() {
     // pixel-level grain mostly stays the aniso's.
     float lpF = 0.0;
     float lpR = 0.0;
+    // MTF compensation setup. The fused luma is a bicubic gather whose
+    // response droops toward the sensor band edge (measured ~0.7 at the
+    // edge, per the srwarp bench note) - and the band edge is exactly the
+    // content Super Resolution is for. Pre-emphasise that droop, but only
+    // inside the raw's supported band, so this can never alias: e = output px
+    // per raw px = 1/srFullPerOut, and a Gaussian's -3dB point sits at
+    // ~0.187/sigma cyc/px, so sigma = 0.375*e places the upper low-pass
+    // exactly on the raw's Nyquist (0.5 cyc/rawpx). The lower edge (~0.18
+    // cyc/px) comes from the same 3x3 weights two texels out. Above e ~ 2 a
+    // 3x3 can no longer express that sigma and the boost stands down.
+    float eOutX = max(srFullPerOut.x, 1e-4);
+    float eOutY = max(srFullPerOut.y, 1e-4);
+    float mtfOn = (min(eOutX, eOutY) >= 0.47) ? 1.0 : 0.0;
+    float sigUx = clamp(0.375 / eOutX, 0.25, 0.70);
+    float sigUy = clamp(0.375 / eOutY, 0.25, 0.70);
+    float aUx = exp(-0.5 / (sigUx * sigUx));
+    float aUy = exp(-0.5 / (sigUy * sigUy));
+    float nU = (1.0 + 2.0 * aUx) * (1.0 + 2.0 * aUy);
+    float lpU = 0.0;
+    float lpW = 0.0;
     for (int j = -1; j <= 1; j++) {
         for (int i = -1; i <= 1; i++) {
             float wgt = (i == 0 ? 0.72 : 0.14) * (j == 0 ? 0.72 : 0.14);
+            float wU = (i == 0 ? 1.0 : aUx) * (j == 0 ? 1.0 : aUy);
             vec2 s = unpackHalf2x16(texelFetch(srAccum, clamp(o + ivec2(i, j), ivec2(0), cmax), 0).x);
-            lpF += wgt * max((s.x / max(s.y, 1e-3) - bLuma) / denom, 0.0);
+            float fLuma = max((s.x / max(s.y, 1e-3) - bLuma) / denom, 0.0);
+            lpF += wgt * fLuma;
+            lpU += wU * fLuma;
+            vec2 s2 = unpackHalf2x16(texelFetch(srAccum, clamp(o + 2 * ivec2(i, j), ivec2(0), cmax), 0).x);
+            lpW += wgt * max((s2.x / max(s2.y, 1e-3) - bLuma) / denom, 0.0);
             vec3 r = texelFetch(InputBuffer,
                     clamp(oIn + ivec2(i, j), ivec2(0), textureSize(InputBuffer, 0) - ivec2(1)), 0).rgb;
             lpR += wgt * dot(r, vec3(0.2126, 0.7152, 0.0722));
         }
     }
+    // Compensate the gather's band-edge droop: boost the uppermost legal
+    // octave by 1/0.7 - 1 ~= 0.43, damped where the band's own content is
+    // below the noise floor (0.5 sigma, a noise guard, not a tuning ramp).
+    // Applied to the fused field itself, so it is reference-free and cannot
+    // import aliasing from the KernelNet reconstruction.
+    float band = lpW - lpU / nU;
+    float tB = 0.5 * sigma / max(abs(band), 1e-9);
+    float mtfGate = mtfOn * max(0.0, 1.0 - tB * tB);
+    yFusedPost += mtfGate * 0.43 * band;
+    float hp = yFusedPost - yRef;
+    float t = srDetail * sigma / max(abs(hp), 1e-9);
+    float m = max(0.0, 1.0 - t * t);
     float dInj = m * hp + (1.0 - m) * (lpF - lpR);
     vec3 rgb = ref + srBlend * dInj + vec3(srAcutance * refT.a);
     Output = vec4(clamp(rgb, vec3(0.0), vec3(8.0)), 1.0);
