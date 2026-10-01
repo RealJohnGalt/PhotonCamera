@@ -1187,11 +1187,13 @@ public final class TileDriver {
         int bands = 0;
         for (int[] band : computeBands(outH, HEAD_TILE_ROWS)) {
             int o0 = band[0], o1 = band[1];
-            // Resolve input window (its reference stencil), then the detail
-            // input window (its halo) - the aniso renders the final window.
-            int rd0 = Math.max(0, o0 - hRes), rd1 = Math.min(outH, o1 + hRes);
-            int ad0 = Math.max(0, rd0 - hDa), ad1 = Math.min(outH, rd1 + hDa);
-            int[] win = inputWindow(ad0, ad1, inH, up.anisoZoomY, hUp);
+            // Chained windows, resolve first: the detail reads the resolved
+            // rows it needs (its halo), the resolve writes those rows from
+            // the aniso window it needs, and the aniso renders that final
+            // window from the crop.
+            int x0 = Math.max(0, o0 - hDa), x1 = Math.min(outH, o1 + hDa);
+            int rd0 = Math.max(0, x0 - hRes), rd1 = Math.min(outH, x1 + hRes);
+            int[] win = inputWindow(rd0, rd1, inH, up.anisoZoomY, hUp);
             int wy0 = win[0], wy1 = win[1];
             GLTexture inTile = null, anisoTile = null, detailTile = null, resTile = null;
             try {
@@ -1201,33 +1203,28 @@ public final class TileDriver {
                 inTile = new GLTexture(new Point(cropIn.mSize.x, wy1 - wy0),
                         new GLFormat(cropIn.mFormat), null, GL_LINEAR, GL_CLAMP_TO_EDGE);
                 blitBand(cropIn, inTile, wy0, wy1 - wy0);
-                anisoTile = newTile(outW, ad1 - ad0, out.mFormat);
-                if (!up.renderAnisoTile(cropIn, inTile, anisoTile, ad0, wy0)) {
+                anisoTile = newTile(outW, rd1 - rd0, out.mFormat);
+                if (!up.renderAnisoTile(cropIn, inTile, anisoTile, rd0, wy0)) {
                     throw new IllegalStateException("head produce: aniso declined");
                 }
                 inTile.close();
                 inTile = null;
-                GLTexture resIn = anisoTile;
-                int resInOrigin = ad0;
+                resTile = newTile(outW, x1 - x0, out.mFormat);
+                res.renderTile(anisoTile, resTile, rd0, x0);
+                anisoTile.close();
+                anisoTile = null;
                 if (daActive) {
-                    detailTile = newTile(outW, rd1 - rd0, out.mFormat);
-                    da.renderTile(anisoTile, detailTile, ad0, rd0);
-                    anisoTile.close();
-                    anisoTile = null;
-                    resIn = detailTile;
-                    resInOrigin = rd0;
-                }
-                resTile = newTile(outW, o1 - o0, out.mFormat);
-                res.renderTile(resIn, resTile, resInOrigin, o0);
-                if (detailTile != null) {
+                    // The 3a detail lands on top of the resolved luma (it is
+                    // a band-edge residue the fused gather attenuates); it
+                    // writes exactly this band, so it is blitted directly.
+                    detailTile = newTile(outW, o1 - o0, out.mFormat);
+                    da.renderTile(resTile, detailTile, x0, o0);
+                    blitBand(detailTile, out, 0, o1 - o0, o0);
                     detailTile.close();
                     detailTile = null;
+                } else {
+                    blitBand(resTile, out, o0 - x0, o1 - o0, o0);
                 }
-                if (anisoTile != null) {
-                    anisoTile.close();
-                    anisoTile = null;
-                }
-                blitBand(resTile, out, 0, o1 - o0, o0);
                 resTile.close();
                 resTile = null;
                 bands++;

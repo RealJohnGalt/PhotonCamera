@@ -117,10 +117,13 @@ public final class SRDetailApply extends Node {
                 && (sharedDetail != 0 || (params != null && ownedBase != null))
                 && paramsSize.x > 0 && paramsSize.y > 0
                 && srPostStrength > 0f && p != null && p.rawSize != null
-                && p.rawSize.x > 0 && p.rawSize.y > 0
-                // Full-SR path replaces this content downstream: stand down
-                // (releasing our own ferry) instead of rendering discarded work.
-                && pp.srFullCPU == null && pp.srFullTexID == 0;
+                && p.rawSize.x > 0 && p.rawSize.y > 0;
+                // No full-SR stand-down any more: this node now runs *after*
+                // SRResolve, so the resolve's luma replacement can no longer
+                // cancel the layer. The full drizzle's luma is a bicubic
+                // gather whose response droops at the sensor band edge; this
+                // layer is the merge's motion-compensated band-edge residue
+                // and is exactly the content that lookup loses.
         if (!ok) {
             releaseFerry(pp);
             WorkingTexture = previousNode.WorkingTexture;

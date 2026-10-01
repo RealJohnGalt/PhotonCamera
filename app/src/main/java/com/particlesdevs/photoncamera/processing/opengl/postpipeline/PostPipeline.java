@@ -1749,14 +1749,18 @@ public class PostPipeline extends GLBasePipeline {
         // Local contrast and sharpening further down still run at output
         // resolution like any other shot.
         add(new UpscaleCrop());
-        // SR detail top-up while still linear: the merge-stage layer survives
-        // the upscale kernel here instead of being smoothed by it (null-ferry
-        // passthrough when inactive).
-        add(new SRDetailApply());
         // Full-SR resolve: normalizes the drizzled accumulation when the
         // merge provided one, replacing the aniso output (null passthrough
         // on single-frame/native skips, where UpscaleCrop rendered normally).
+        // Runs before SRDetailApply because it replaces the luma: the 3a
+        // detail layer is a band-edge residue and must land on top of the
+        // resolved luma instead of being cancelled by that replacement.
         add(new SRResolve());
+        // SR detail top-up while still linear: the merge-stage layer survives
+        // the upscale kernel here instead of being smoothed by it (null-ferry
+        // passthrough when inactive). With the full drizzle active this adds
+        // the true band-edge detail the bicubic-gathered fused luma loses.
+        add(new SRDetailApply());
         if ("off".equals(tonePipeline)) {
             // No tone/color stage: the linear camera RGB passes through
             // untouched. LinearExposure draws nothing but keeps the Ultra HDR
