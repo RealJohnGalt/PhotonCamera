@@ -1337,7 +1337,7 @@ def main():
         trust_p={"floor": args.trustfloor, "band": args.trustband,
                  "s0": args.noises0, "o0": args.noiseo0,
                  "clip": args.clipatten},
-        err_cells=None,
+        err_cells=err_cells,
         motion_k=(args.motionk1, args.motionk2),
         refine_on=bool(args.srrefine),
         ref_corr=tuple(float(v) for v in args.refcorr.split(",")[:2]),

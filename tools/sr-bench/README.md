@@ -616,8 +616,14 @@ The first fixture missed the device's structural mechanisms. Added:
   SR_TILE_AL = 16 raw px grid, smooth/ramp/both), fed BOTH to the deposit
   position (atlas warp) and to the real trust gate through the packed
   diff/base textures, so srscatter's own 3x3 signed-mean formula decides the
-  per-site weight. The gate barely fires on broadband texture (the signed mean
-  cancels dipoles) but does drop weights on coherent gradients, as designed.
+  per-site weight. With honest geometry (the deposit displacement was wired
+  in after the trust-only era), 2 px of random error costs the delivery
+  (corr 0.53 -> 0.21, band err 0.0030 -> 0.0041 ~= Disabled 0.0042) while
+  artifactHF stays neutral (0.0116 == Disabled) - the gate cannot separate
+  alias from detail under phase decorrelation, but the output never goes
+  worse than Disabled. The gate barely fires on broadband texture (the
+  signed mean cancels dipoles) but does drop weights on coherent
+  gradients, as designed.
 - `--gainerr`: per-frame photometric mismatch. 10% mismatch drives the
   sample-pitch autocorrelation of |SR-Disabled| to 0.68 - the metric sees a
   lattice; at realistic 1-3% it stays ~0.15.
