@@ -59,6 +59,19 @@ uniform float srClipAtten;
 uniform float srMotionMax;
 #define SR_TILE 2
 #define SR_TILE_AL 16
+// Absolute motion gate on the pre-refinement residual (same convention as
+// merge/srscatter): a large coherent residual suppresses the LK warp even
+// when the correction looks locally consistent.
+#ifndef SR_MOTION_K1
+#define SR_MOTION_K1 1.0
+#endif
+#ifndef SR_MOTION_K2
+#define SR_MOTION_K2 2.0
+#endif
+
+float srMotionProb(float preRes, float band) {
+    return smoothstep(SR_MOTION_K1 * band, SR_MOTION_K2 * band, preRes);
+}
 
 float pick4(vec4 v, int ch) {
     return ch == 0 ? v.x : (ch == 1 ? v.y : (ch == 2 ? v.z : v.w));
@@ -155,12 +168,35 @@ void main() {
             m = mix(mix(m00, m10, f.x), mix(m01, m11, f.x), f.y);
         }
         m = clamp(m, vec2(-srMotionMax), vec2(srMotionMax));
+        // Absolute motion gate for the warp: a large coherent residual of
+        // this site's own channel means a moving subject, not a sub-pixel
+        // misregistration the LK step should chase. The trust block below
+        // recomputes the same residual for the weight; this early probe only
+        // gates the warp.
+        float srWarpGate = 0.0;
+        {
+            ivec2 dmax0 = textureSize(diffPacked, 0) - ivec2(1);
+            ivec2 ip0 = ivec2(floor(p + vec2(0.5)));
+            float rSum0 = 0.0;
+            for (int j = -1; j <= 1; j++) {
+                for (int i = -1; i <= 1; i++) {
+                    ivec2 tp = clamp(ip0 + ivec2(i, j), ivec2(0), dmax0);
+                    rSum0 += pick4(texelFetch(diffPacked, tp, 0), ch)
+                            - pick4(texelFetch(basePacked, tp, 0), ch);
+                }
+            }
+            float pre0 = abs(rSum0 * (1.0 / 9.0));
+            float lum0 = max(pick4(texelFetch(diffPacked, clamp(ip0, ivec2(0), dmax0), 0), ch), 1e-4);
+            float band0 = max(srTrustBand, 4.0 * sqrt(max(srNoiseS0 * lum0 + srNoiseO0, 1e-12)));
+            srWarpGate = srMotionProb(pre0, band0);
+        }
         // Sub-pixel alignment refinement (bilinear over the same cell grid),
         // gated by the atlas motion: on a static burst the LK residual is
         // noise and applying it warps the lattice randomly (see merge/srscatter).
+        // The absolute gate further suppresses it on moving subjects.
         m += srRefine * texture(srRefMap, clamp(
                 (A + vec2(0.5)) / vec2(srAlignSize),
-                vec2(0.0), vec2(1.0))).xy * clamp(2.0 * length(m), 0.0, 1.0);
+                vec2(0.0), vec2(1.0))).xy * clamp(2.0 * length(m), 0.0, 1.0) * (1.0 - srWarpGate);
     }
     // Point drizzle: deposit the nearest sample of this site's CFA channel at
     // its own lattice phase. A raw output wants exactly this - the mosaic's

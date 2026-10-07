@@ -44,11 +44,29 @@ layout(r32ui, binding = 1) coherent uniform highp uimage2D srDepW;
 #define SR_TILE 2
 #define SR_TILE_AL 16
 #define SR_PHI2 1.324717957244746
+// Absolute motion gate on the pre-refinement residual, in units of the trust
+// band: below K1 the frame follows the LK/divergence logic, above K2 it is
+// judged (and warped) as motion regardless of neighbour agreement. A moving
+// object larger than a refinement cell leaves no neighbour-divergence signal,
+// so without this the LK correction warps the subject into the base and the
+// trust judges the small post-warp residual instead of the real mismatch.
+#ifndef SR_MOTION_K1
+#define SR_MOTION_K1 1.0
+#endif
+#ifndef SR_MOTION_K2
+#define SR_MOTION_K2 2.0
+#endif
 
 vec2 srCellMotion(ivec2 cell) {
     ivec2 am = textureSize(alignmentTexture, 0) - ivec2(1);
     vec4 a = texelFetch(alignmentTexture, clamp(cell + srShift, ivec2(0), am), 0);
     return a.xy * vec2(srRawHalf) + a.zw;
+}
+
+// Absolute motion probability from the pre-refinement residual, in units of
+// the trust band (see SR_MOTION_K1/K2 above).
+float motionProbGate(float preRes, float band) {
+    return smoothstep(SR_MOTION_K1 * band, SR_MOTION_K2 * band, preRes);
 }
 
 void main() {
@@ -82,31 +100,8 @@ void main() {
             m = mix(mix(m00, m10, f.x), mix(m01, m11, f.x), f.y);
         }
         m = clamp(m, vec2(-srMotionMax), vec2(srMotionMax));
-        // Sub-pixel refinement, gated by actual atlas motion (a static burst's
-        // LK fit is noise and must not warp the sampling lattice).
-        refv = texture(srRefMap, clamp(
-                (A + vec2(0.5)) / vec2(srAlignSize), vec2(0.0), vec2(1.0)));
-        // .w is only meaningful when the refinement actually ran (otherwise
-        // srRefMap falls back to the packed base).
-        photoGain = srRefine > 0.5 ? clamp(refv.w, 0.9, 1.1) : 1.0;
-        float corrLoc = 0.0;
-        {
-            vec2 ruv = clamp((A + vec2(0.5)) / vec2(srAlignSize), vec2(0.0), vec2(1.0));
-            vec2 rstep = vec2(1.0) / vec2(textureSize(srRefMap, 0));
-            vec2 nbr = 0.25 * (
-                    texture(srRefMap, clamp(ruv + vec2(rstep.x, 0.0), vec2(0.0), vec2(1.0))).xy
-                    + texture(srRefMap, clamp(ruv - vec2(rstep.x, 0.0), vec2(0.0), vec2(1.0))).xy
-                    + texture(srRefMap, clamp(ruv + vec2(0.0, rstep.y), vec2(0.0), vec2(1.0))).xy
-                    + texture(srRefMap, clamp(ruv - vec2(0.0, rstep.y), vec2(0.0), vec2(1.0))).xy);
-            corrLoc = length(refv.xy - nbr);
-        }
-        m += srRefine * refv.xy * clamp(2.0 * length(m), 0.0, 1.0);
-        // Fusion trust: a 3x3 signed mean of the true residual (aligned alter
-        // minus the running base) cancels the dipoles sub-pixel sampling
-        // leaves at edges, while misregistration or a moving object reads as
-        // a large coherent mean. A correction beyond half a raw pixel that
-        // also diverges from its neighbours is a moving subject warped into
-        // the base, judged by the pre-refine residual instead.
+        // Trust residuals before the warp: the absolute motion gate below
+        // needs the pre-refinement residual before any correction is applied.
         ivec2 dmax = textureSize(diffPacked, 0) - ivec2(1);
         ivec2 ip = ivec2(floor(p + vec2(0.5)));
         vec3 rSum = vec3(0.0);
@@ -126,9 +121,39 @@ void main() {
         float var0 = max(srNoiseS0 * lum + srNoiseO0, 1e-12);
         float band = max(srTrustBand, 4.0 * sqrt(var0));
         float preRes = dot(abs(rMean), vec3(1.0 / 3.0));
-        float motionness = step(0.25, length(refv.xy)) * smoothstep(0.1, 0.3, corrLoc);
-        float lf = srRefine > 0.5 ? mix(refv.z, preRes, motionness) : preRes;
         float mag = dot(rMag, vec3(1.0 / 3.0));
+        // Sub-pixel refinement, gated by actual atlas motion (a static burst's
+        // LK fit is noise and must not warp the sampling lattice).
+        refv = texture(srRefMap, clamp(
+                (A + vec2(0.5)) / vec2(srAlignSize), vec2(0.0), vec2(1.0)));
+        // .w is only meaningful when the refinement actually ran (otherwise
+        // srRefMap falls back to the packed base).
+        photoGain = srRefine > 0.5 ? clamp(refv.w, 0.9, 1.1) : 1.0;
+        float corrLoc = 0.0;
+        {
+            vec2 ruv = clamp((A + vec2(0.5)) / vec2(srAlignSize), vec2(0.0), vec2(1.0));
+            vec2 rstep = vec2(1.0) / vec2(textureSize(srRefMap, 0));
+            vec2 nbr = 0.25 * (
+                    texture(srRefMap, clamp(ruv + vec2(rstep.x, 0.0), vec2(0.0), vec2(1.0))).xy
+                    + texture(srRefMap, clamp(ruv - vec2(rstep.x, 0.0), vec2(0.0), vec2(1.0))).xy
+                    + texture(srRefMap, clamp(ruv + vec2(0.0, rstep.y), vec2(0.0), vec2(1.0))).xy
+                    + texture(srRefMap, clamp(ruv - vec2(0.0, rstep.y), vec2(0.0), vec2(1.0))).xy);
+            corrLoc = length(refv.xy - nbr);
+        }
+        m += srRefine * refv.xy * clamp(2.0 * length(m), 0.0, 1.0) * (1.0 - motionProbGate(preRes, band));
+        // Fusion trust: a 3x3 signed mean of the true residual (aligned alter
+        // minus the running base) cancels the dipoles sub-pixel sampling
+        // leaves at edges, while misregistration or a moving object reads as
+        // a large coherent mean. A correction beyond half a raw pixel that
+        // also diverges from its neighbours is a moving subject warped into
+        // the base, judged by the pre-refine residual instead. A large
+        // coherent residual is motion even when the neighbours agree (an
+        // object larger than the cell), so the absolute gate overrides the
+        // divergence test there - and the warp above is already suppressed,
+        // so the gate judges the real mismatch, not the warped-into-base one.
+        float motionness = step(0.25, length(refv.xy)) * smoothstep(0.1, 0.3, corrLoc);
+        float motionGate = max(motionness, motionProbGate(preRes, band));
+        float lf = srRefine > 0.5 ? mix(refv.z, preRes, motionGate) : preRes;
         w = max(1.0 / (1.0 + (lf / band) * (lf / band)), srTrustFloor)
                 / (1.0 + pow(mag / (16.0 * band), 4.0));
     }

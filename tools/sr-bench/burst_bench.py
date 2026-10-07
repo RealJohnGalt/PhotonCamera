@@ -351,17 +351,31 @@ def make_trust(args, fx, fy, ph, amp, mtf, raw, err_cells):
 
 
 def deposit_frames(ctx, raw, out, exp, lumas, deltas, trust=None, trust_p=None,
-                   err_cells=None):
+                   err_cells=None, motion_k=(1.0, 2.0), refine_on=False,
+                   ref_corr=(0.0, 0.0), ref_resid=0.0):
     """Run the real merge/srscatter deposit per frame.
 
     trust: per-frame (diffPacked, basePacked) RGBA16F quads at raw/2, or None
     (neutral gate). err_cells: per-frame (asz,asz,2) residual alignment error
     in output px, added to the atlas motion so the deposit lands at the
-    misregistered position the gate is judging."""
+    misregistered position the gate is judging. motion_k: (K1, K2) overrides
+    for the shader's SR_MOTION_K1/K2 absolute motion gate (None = shipped
+    defaults). refine_on: bind a uniform mock srRefMap (.xy=ref_corr packed
+    texels, .z=ref_resid) with srRefine=1, isolating the absolute gate
+    (uniform mock => neighbour divergence is zero, so only the absolute gate
+    can fire)."""
     neutral = np.full((raw // 2, raw // 2, 4), 0.5, dtype=np.float16)
     base_tex = ctx.texture((raw // 2, raw // 2), 4, f2(neutral), dtype="f2")
     asz = max(1, raw // 16)
     atlas = ctx.texture((asz, asz), 4, dtype="f2")
+    ref_tex = None
+    if refine_on:
+        mock = np.zeros((asz, asz, 4), dtype=np.float16)
+        mock[..., 0] = ref_corr[0]
+        mock[..., 1] = ref_corr[1]
+        mock[..., 2] = ref_resid
+        mock[..., 3] = 1.0
+        ref_tex = ctx.texture((asz, asz), 4, f2(mock), dtype="f2")
     depv = ctx.texture((out, out), 1, dtype="u4")
     depw = ctx.texture((out, out), 1, dtype="u4")
     depv.bind_to_image(0, read=True, write=True)
@@ -370,11 +384,17 @@ def deposit_frames(ctx, raw, out, exp, lumas, deltas, trust=None, trust_p=None,
     clear["srClearA"] = 0
     clear["srClearB"] = 1
     clear.run(out, out, 1)
+    sc_defines = {}
+    if motion_k is not None:
+        sc_defines["SR_MOTION_K1"] = "%.4f" % motion_k[0]
+        sc_defines["SR_MOTION_K2"] = "%.4f" % motion_k[1]
     try:
-        sc = ctx.compute_shader(SB.load_compute("merge/srscatter.glsl"))
+        sc = ctx.compute_shader(SB.load_compute(
+            "merge/srscatter.glsl", defines=sc_defines or None))
     except Exception:
         sc = ctx.compute_shader(SB.load_compute(
-            "merge/srscatter.glsl", version="#version 430 core", drop_oes=True))
+            "merge/srscatter.glsl", version="#version 430 core", drop_oes=True,
+            defines=sc_defines or None))
     sc["srLumaTex"] = 0
     sc["diffPacked"] = 2
     sc["basePacked"] = 3
@@ -382,10 +402,13 @@ def deposit_frames(ctx, raw, out, exp, lumas, deltas, trust=None, trust_p=None,
     sc["srRefMap"] = 5
     base_tex.use(2)
     base_tex.use(3)
-    base_tex.use(5)
+    if ref_tex is not None:
+        ref_tex.use(5)
+    else:
+        base_tex.use(5)
     sc["srDepV"] = 0
     sc["srDepW"] = 1
-    sc["srRefine"] = 0.0
+    sc["srRefine"] = 1.0 if refine_on else 0.0
     sc["srFlowAlign"] = 0
     sc["srShift"] = (0, 0)
     sc["srAlignSize"] = (asz, asz)
@@ -430,6 +453,8 @@ def deposit_frames(ctx, raw, out, exp, lumas, deltas, trust=None, trust_p=None,
     dw = np.frombuffer(depw.read(), dtype=np.uint32).reshape(out, out).astype(np.float64) / SB.FIXED
     for t in (base_tex, atlas, depv, depw):
         t.release()
+    if ref_tex is not None:
+        ref_tex.release()
     return dv, dw
 
 
@@ -1141,6 +1166,22 @@ def main():
     ap.add_argument("--errfield", default="random", choices=["random", "ramp", "both"])
     ap.add_argument("--trustfloor", type=float, default=0.0)
     ap.add_argument("--trustband", type=float, default=0.05)
+    ap.add_argument("--motionk1", type=float, default=1.0,
+                    help="SR_MOTION_K1: absolute motion gate lower edge in "
+                         "trust-band units (shipped 1.0)")
+    ap.add_argument("--motionk2", type=float, default=2.0,
+                    help="SR_MOTION_K2: absolute motion gate upper edge in "
+                         "trust-band units (shipped 2.0)")
+    ap.add_argument("--srrefine", type=int, default=0, choices=[0, 1],
+                    help="bind a uniform mock srRefMap with srRefine=1, "
+                         "isolating the absolute motion gate (uniform mock => "
+                         "neighbour divergence is zero)")
+    ap.add_argument("--refcorr", default="0.3,0.1",
+                    help="mock LK correction in packed texels (x,y) for "
+                         "--srrefine 1 (shipped-code path: warp + refv.z judge)")
+    ap.add_argument("--refresid", type=float, default=0.001,
+                    help="mock post-correction residual for --srrefine 1: small "
+                         "so the pre-fix code trusts the warped frame")
     ap.add_argument("--covadapt", type=float, default=0.0,
                     help="prototype: widen the reconstruction kernel by this factor "
                          "where the composed alpha (deposit coverage) is 0")
@@ -1280,7 +1321,12 @@ def main():
         ctx, raw, out, exp, lumas, deltas, trust=trust,
         trust_p={"floor": args.trustfloor, "band": args.trustband,
                  "s0": args.noises0, "o0": args.noiseo0,
-                 "clip": args.clipatten})
+                 "clip": args.clipatten},
+        err_cells=None,
+        motion_k=(args.motionk1, args.motionk2),
+        refine_on=bool(args.srrefine),
+        ref_corr=tuple(float(v) for v in args.refcorr.split(",")[:2]),
+        ref_resid=args.refresid)
     if args.splatbox > 1.0:
         depv = blur_droplet(depv, "box", args.splatbox)
         depw = blur_droplet(depw, "box", args.splatbox)

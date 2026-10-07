@@ -125,7 +125,7 @@ def band_of(field, per_out):
 
 def scatter_gpu(ctx, raw, out, exp, frames, comp, dc, noise, seed,
                 force_deltas=None, reg_err=0.0, reg_spatial=0.0, feed_trust=False,
-                sr_jitter=0.0, reg_model="random"):
+                sr_jitter=0.0, reg_model="random", motion_k1=0.0, motion_k2=0.0):
     """Run the real merge/srscatter deposit on the GPU for one burst and
     return (value, weight) accumulators in float units, plus the max
     difference against a numpy mirror of the same deposit (the convention
@@ -159,12 +159,19 @@ def scatter_gpu(ctx, raw, out, exp, frames, comp, dc, noise, seed,
     clear.run(out, out, 1)
 
     try:
-        sc = ctx.compute_shader(load_compute("merge/srscatter.glsl"))
+        sc_defines = {}
+        if motion_k1 > 0.0:
+            sc_defines["SR_MOTION_K1"] = "%.4f" % motion_k1
+        if motion_k2 > 0.0:
+            sc_defines["SR_MOTION_K2"] = "%.4f" % motion_k2
+        sc = ctx.compute_shader(load_compute(
+            "merge/srscatter.glsl", defines=sc_defines or None))
     except Exception:
         # Desktop GL compiles the app's OES atomic extension only when it is
         # advertised; the atomics are core in 4.3, so fall back cleanly.
         sc = ctx.compute_shader(load_compute(
-            "merge/srscatter.glsl", version="#version 430 core", drop_oes=True))
+            "merge/srscatter.glsl", version="#version 430 core", drop_oes=True,
+            defines=sc_defines or None))
     sc["srLumaTex"] = 0
     sc["diffPacked"] = 2
     sc["basePacked"] = 3
@@ -1394,6 +1401,10 @@ def main():
                     help="force every frame to the SAME sub-pixel phase (zero lattice diversity)")
     ap.add_argument("--feedtrust", action="store_true",
                     help="feed the per-site registration residual to the scatter trust gate")
+    ap.add_argument("--motionk1", type=float, default=0.0,
+                    help="override SR_MOTION_K1 (absolute motion gate lower edge, 0 = shipped 1.0)")
+    ap.add_argument("--motionk2", type=float, default=0.0,
+                    help="override SR_MOTION_K2 (absolute motion gate upper edge, 0 = shipped 2.0)")
     ap.add_argument("--latideal", action="store_true",
                     help="with --fusion, use an ideal anti-aliased lattice reduce instead of the device bilinear one")
     ap.add_argument("--fusion", action="store_true",
@@ -1510,7 +1521,8 @@ def main():
                           else ([(0.37 * exp, 0.61 * exp)] * args.frames if args.fixedjitter else None)),
             reg_err=args.reg, reg_spatial=args.regspatial, feed_trust=args.feedtrust,
             reg_model=args.regmodel,
-            sr_jitter=args.srjitter)
+            sr_jitter=args.srjitter,
+            motion_k1=args.motionk1, motion_k2=args.motionk2)
         # The GPU path is the real shader; the mirror is a sanity cross-check.
         # Weight totals must agree exactly (each site deposits unit weight) -
         # unless the trust residual is fed, which scales the GPU weights but
