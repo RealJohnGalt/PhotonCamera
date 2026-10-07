@@ -306,7 +306,11 @@ def resize_bilinear(a, n):
 def make_err_cells(args, asz, rng, f):
     """Residual alignment error per frame, in output px, on the app's per-cell
     (SR_TILE_AL = 16 raw px) grid. Models what the atlas/refine cannot absorb:
-    a smooth misregistration field plus a parallax/rolling ramp."""
+    a smooth misregistration field plus a parallax/rolling ramp. The "row"
+    family models rolling-shutter shear instead: each row exposed at a
+    different instant of the handshake, so the residual is a per-frame shear
+    along y (zero at the mid row, extremes at top/bottom) - coherent along
+    rows, invisible to the per-cell translation fit."""
     if args.alignerr <= 0 or f == 0:
         return np.zeros((asz, asz, 2))
     base = np.stack([resize_bilinear(
@@ -317,11 +321,21 @@ def make_err_cells(args, asz, rng, f):
         yy, xx = np.mgrid[0:asz, 0:asz] / max(asz - 1, 1)
         ramp[..., 0] = yy - 0.5
         ramp[..., 1] = 0.5 - xx
+    shear = np.zeros((asz, asz, 2))
+    if args.errfield in ("row", "rowboth"):
+        # Same amplitude convention as the ramp (mid row 0, extremes at
+        # +-0.5 before the 2.0 below): full alignerr at top/bottom rows.
+        yy = (np.arange(asz) / max(asz - 1, 1) - 0.5)[:, None]
+        dirf = rng.standard_normal(2)
+        dirf /= max(float(np.linalg.norm(dirf)), 1e-9)
+        shear = yy[..., None] * dirf[None, None, :]
     e = np.zeros((asz, asz, 2))
-    if args.errfield in ("random", "both"):
+    if args.errfield in ("random", "both", "rowboth"):
         e += base
     if args.errfield in ("ramp", "both"):
         e += 2.0 * ramp
+    if args.errfield in ("row", "rowboth"):
+        e += shear if args.errfield == "rowboth" else 2.0 * shear
     return e * args.alignerr
 
 
@@ -348,6 +362,84 @@ def make_trust(args, fx, fy, ph, amp, mtf, raw, err_cells):
         p[..., 3] = V[1::2, 1::2]
         return p
     return pack(diff), pack(base)
+
+
+def build_mls_samples(args, raw, exp, lumas, deltas, trust, trust_p,
+                      err_cells):
+    """Mirror of the srscatter warp + absolute trust gate for the MLS blend:
+    per raw site per frame (position, luma, motionProb).
+
+    Valid for the bench deposit configuration (refine/jitter off): positions
+    come from the atlas bilinear motion only. motionProb mirrors the
+    shader's absolute gate on the 3x3 signed-mean residual (SHIPPED
+    SR_MOTION_K1/K2 = 1.0/2.0); None trust means zero residual everywhere.
+    """
+    asz = max(1, raw // 16)
+    n = raw * raw
+    i = np.arange(raw)
+    X0, Y0 = np.meshgrid(i, i)
+    # Packed coordinate of each site (bench cfaShift is 0).
+    px = X0 * 0.5 - 0.25
+    py = Y0 * 0.5 - 0.25
+    Ax = px / 8.0
+    Ay = py / 8.0
+    x0 = np.floor(Ax).astype(int)
+    y0 = np.floor(Ay).astype(int)
+    fxr = np.clip(Ax - x0, 0.0, 1.0)
+    fyr = np.clip(Ay - y0, 0.0, 1.0)
+    xa = np.clip(x0, 0, asz - 1)
+    xb = np.clip(x0 + 1, 0, asz - 1)
+    ya = np.clip(y0, 0, asz - 1)
+    yb = np.clip(y0 + 1, 0, asz - 1)
+    tp = trust_p or {}
+    band0 = tp.get("band", 0.05)
+    s0 = tp.get("s0", 0.0)
+    o0 = tp.get("o0", 0.0)
+    pos, val, mp = [], [], []
+    for f in range(len(lumas)):
+        dx, dy = deltas[f]
+        if err_cells is None:
+            ex = np.zeros((asz, asz))
+            ey = np.zeros((asz, asz))
+        else:
+            ex = err_cells[f][..., 0]
+            ey = err_cells[f][..., 1]
+        # Atlas motion in packed px, exactly as deposit_frames encodes it.
+        mx = (dx - ex) / (2.0 * exp)
+        my = (dy - ey) / (2.0 * exp)
+        m00x, m00y = mx[ya, xa], my[ya, xa]
+        m10x, m10y = mx[ya, xb], my[ya, xb]
+        m01x, m01y = mx[yb, xa], my[yb, xa]
+        m11x, m11y = mx[yb, xb], my[yb, xb]
+        mxS = (m00x * (1 - fxr) + m10x * fxr) * (1 - fyr) \
+            + (m01x * (1 - fxr) + m11x * fxr) * fyr
+        myS = (m00y * (1 - fxr) + m10y * fxr) * (1 - fyr) \
+            + (m01y * (1 - fxr) + m11y * fxr) * fyr
+        # Sample position in output pixel-center coordinates.
+        sx = (X0 - 2.0 * mxS) * exp
+        sy = (Y0 - 2.0 * myS) * exp
+        pos.append(np.stack([sx.ravel(), sy.ravel()], -1))
+        val.append(lumas[f][..., 0].reshape(-1).astype(np.float64))
+        if trust is not None and f > 0 and trust[f] is not None:
+            d, b = trust[f][0][..., :3], trust[f][1][..., :3]
+            r = (d - b).mean(-1)
+            rp = np.pad(r, 1, mode="edge")
+            rmean = (rp[:-2, :-2] + rp[:-2, 1:-1] + rp[:-2, 2:]
+                     + rp[1:-1, :-2] + rp[1:-1, 1:-1] + rp[1:-1, 2:]
+                     + rp[2:, :-2] + rp[2:, 1:-1] + rp[2:, 2:]) / 9.0
+            lum = d.mean(-1)
+            var0 = np.maximum(s0 * lum + o0, 1e-12)
+            band = np.maximum(band0, 4.0 * np.sqrt(var0))
+            pre = np.abs(rmean)
+            mpp = np.clip((pre - 1.0 * band) / np.maximum(band, 1e-9),
+                          0.0, 1.0)
+            mpp = mpp * mpp * (3.0 - 2.0 * mpp)
+            # Nearest packed site per raw site (cfa 0: texel (x//2, y//2)).
+            mp.append(mpp[np.clip(Y0 // 2, 0, mpp.shape[0] - 1),
+                          np.clip(X0 // 2, 0, mpp.shape[1] - 1)].ravel())
+        else:
+            mp.append(np.zeros(n))
+    return np.concatenate(pos, 0), np.concatenate(val, 0), np.concatenate(mp, 0)
 
 
 def deposit_frames(ctx, raw, out, exp, lumas, deltas, trust=None, trust_p=None,
@@ -1178,7 +1270,8 @@ def main():
     ap.add_argument("--alignerr", type=float, default=0.0,
                     help="residual per-frame alignment error amplitude (output px); "
                          "feeds the real trust gate and the deposit position")
-    ap.add_argument("--errfield", default="random", choices=["random", "ramp", "both"])
+    ap.add_argument("--errfield", default="random", choices=["random", "ramp", "both", "row", "rowboth"],
+                    help="residual error shape: random cell field, global ramp, both, rolling-shutter row shear, or row+random")
     ap.add_argument("--trustfloor", type=float, default=0.0)
     ap.add_argument("--trustband", type=float, default=0.05)
     ap.add_argument("--motionk1", type=float, default=1.0,
@@ -1197,6 +1290,16 @@ def main():
     ap.add_argument("--refresid", type=float, default=0.001,
                     help="mock post-correction residual for --srrefine 1: small "
                          "so the pre-fix code trusts the warped frame")
+    ap.add_argument("--mls2", action="store_true",
+                    help="blend the drizzle with an MLS degree-2 fit gated by "
+                         "the mirrored absolute motion gate (the shipped "
+                         "drizzle where samples disagree, the inverse where "
+                         "they agree); requires --srrefine 0 (the mirror "
+                         "covers the atlas-only warp)")
+    ap.add_argument("--mlsradius", type=float, default=2.5,
+                    help="MLS support radius in output px")
+    ap.add_argument("--mlslam", type=float, default=1e-3,
+                    help="MLS ridge relative to the local weight sum")
     ap.add_argument("--covadapt", type=float, default=0.0,
                     help="prototype: widen the reconstruction kernel by this factor "
                          "where the composed alpha (deposit coverage) is 0")
@@ -1350,6 +1453,20 @@ def main():
         depw = blur_droplet(depw, "gauss", args.splatgauss)
 
     drizzle, driz_w = run_drizzle(ctx, out, exp, depv, depw, args.comb)
+    mls_conf = -1.0
+    if args.mls2:
+        if args.srrefine:
+            raise SystemExit("--mls2 requires --srrefine 0 (mirror covers the atlas-only warp)")
+        import mls_proto as _mls
+        args.radius = args.mlsradius
+        _spos, _sval, _smp = build_mls_samples(
+            args, raw, exp, lumas, deltas, trust,
+            {"floor": args.trustfloor, "band": args.trustband,
+             "s0": args.noises0, "o0": args.noiseo0,
+             "clip": args.clipatten}, err_cells)
+        drizzle, mls_conf = _mls.mls_gated_blend(
+            args, drizzle, _spos, _sval, _smp, degree=2, lam=args.mlslam)
+        print("  mls2 blend: mean confidence=%.3f" % mls_conf)
     crop = demosaic_bilinear(raw, packed0)
     # Coverage reference, same convention as the device (frames/exp^2).
     cov_ref = max(1.0, args.frames / float(exp * exp))
@@ -1415,6 +1532,7 @@ def main():
                             final=final_st,
                             drizWmean=float(driz_w.mean()),
                             drizWp10=float(np.quantile(driz_w, 0.1)),
+                            mlsConf=float(mls_conf),
                             gates={n: bool(g) for n, g in gates}), _f,
                        indent=1, sort_keys=True)
     if args.save:

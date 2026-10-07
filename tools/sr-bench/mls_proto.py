@@ -149,6 +149,66 @@ def band_stats(rec, truth_ap, f0=0.25, f1=0.499):
     return amp, corr
 
 
+def mls_gated_blend(args, drizzle, spos, sval, smp, degree=2, lam=1e-3):
+    """Blend the deposit drizzle with an MLS degree-`degree` fit, gated by
+    per-sample motion probability: out = mix(drizzle, mls, 1-max(mp)).
+    Where nearby samples disagree coherently (motion/misregistration) the
+    output is exactly the shipped drizzle; where they agree it is the
+    inverse. No-sample pixels keep the drizzle (the compose falls back).
+    Returns (blended, confmean)."""
+    out = args.raw * args.exp
+    R = args.radius
+    cell = np.floor(spos).astype(int)
+    key = cell[:, 1] * (out + 2) + cell[:, 0]
+    order = np.argsort(key)
+    skey = key[order]
+    H = int(np.ceil(R))
+    field = np.zeros((out, out))
+    confsum = 0.0
+    for oy in range(out):
+        y0 = max(0, oy - H)
+        y1 = min(out - 1, oy + H)
+        for ox in range(out):
+            x0 = max(0, ox - H)
+            x1 = min(out - 1, ox + H)
+            lo = y0 * (out + 2) + x0
+            hi = y1 * (out + 2) + x1 + 1
+            a = np.searchsorted(skey, lo, side="left")
+            b = np.searchsorted(skey, hi, side="right")
+            idx = order[a:b]
+            if len(idx) == 0:
+                field[oy, ox] = drizzle[oy, ox]
+                continue
+            p = spos[idx]
+            m = (np.abs(p[:, 0] - (ox + 0.5)) <= R) & (np.abs(p[:, 1] - (oy + 0.5)) <= R)
+            idx = idx[m]
+            if len(idx) == 0:
+                field[oy, ox] = drizzle[oy, ox]
+                continue
+            conf = 1.0 - float(smp[idx].max())
+            confsum += conf
+            if conf <= 0.0:
+                field[oy, ox] = drizzle[oy, ox]
+                continue
+            offs = spos[idx] - np.array([ox + 0.5, oy + 0.5])
+            A = design(offs, degree)
+            v = sval[idx]
+            d2 = (offs[:, 0] ** 2 + offs[:, 1] ** 2) / (R * R)
+            w = np.clip(1.0 - d2, 0.0, 1.0) ** 2 + 1e-6
+            W = np.sqrt(w)
+            Aw = A * W[:, None]
+            vw = v * W
+            swsum = w.sum()
+            G = Aw.T @ Aw + np.eye(A.shape[1]) * lam * max(swsum, 1e-9)
+            try:
+                c = np.linalg.solve(G, Aw.T @ vw)
+            except np.linalg.LinAlgError:
+                field[oy, ox] = drizzle[oy, ox]
+                continue
+            field[oy, ox] = (1.0 - conf) * drizzle[oy, ox] + conf * c[0]
+    return field, confsum / (out * out)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--raw", type=int, default=48)

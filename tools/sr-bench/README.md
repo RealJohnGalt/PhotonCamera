@@ -952,11 +952,22 @@ does:
 Safe on smooth content (ramp invented-HF 0.00007 vs 0.00017 for deg-0).
 Two shippability conditions came out of the same prototype:
 
+End-to-end verdict (`--mls2`: the gated blend inside the burst chain,
+drizzle where samples disagree, MLS-2 where they agree): reg-0 tones
+corr +0.03 with amplitude -0.04 (parity); under rowboth error the gate
+holds the line at parity (conf engages only on coherent structure, which
+is exactly the motion case); ramp gates pass. The pre-recon advantage is
+erased by the reconstruction filter downstream, so the blend is not worth
+a new on-device compute pass plus the moment memory it needs. The inverse
+stays an R&D item pending a moments-light formulation.
+
 - Registration sensitivity: with per-frame position errors and uniform
   weights, deg-2 corr collapses faster than deg-0 (reg 1: 0.51 vs 0.63)
-  while keeping high amplitude - confident wrong detail. The design must
-  blend deg-2/deg-0 by the misregistration signal the trust gate already
-  measures (the new motionProb), not by sample weights alone.
+  while keeping high amplitude - confident wrong detail. The `--mls2`
+  chain gate (blend by the mirrored motionProb) contains it to parity,
+  but the gate only fires on coherent structure: on broadband texture the
+  signed mean cancels and confidence stays 1 by design (faithful to the
+  real shader).
 - Edge ringing: ~4.5% overshoot at a hard step (deg-0: 0) - needs the
   Weber-cap treatment the band deconv already has.
 - Device cost: the fit needs sample moments the sum accumulators discard
