@@ -31,6 +31,10 @@ CONFIGS = [
     ("photo9", ["--scene", "photo", "--frames", "9"]),
     ("photo40", ["--scene", "photo", "--frames", "40"]),
     ("tones9noise", ["--scene", "tones", "--frames", "9", "--noise", "0.01"]),
+    # Unity (1x) detail mode: the drizzle at the raw grid, same frames.
+    ("ramp1x9", ["--scene", "ramp", "--frames", "9", "--exp", "1"]),
+    ("diag1x9", ["--scene", "diag", "--frames", "9", "--exp", "1"]),
+    ("tones1x9", ["--scene", "tones", "--frames", "9", "--exp", "1"]),
 ]
 BASE = ["--cfa", "on", "--kmap", "real", "--gate", "off"]
 HIGHER = ("corr", "mtf50", "deliver", "below.amp", "c_sr", "c_lo", "c_hi")

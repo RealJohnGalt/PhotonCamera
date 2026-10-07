@@ -336,6 +336,8 @@ public class ESD4D extends GLOneScript {
     float srMaxExpand = 8.0f;
     @Tunable(title = "Full SR drizzle", category = "Merge", description = "Drizzle burst frames onto the output grid (translation + local block motion); the post folds the fused luma into the crop image before the reconstruction, silent otherwise", min = 0, max = 1, step = 1, defaultValue = 1)
     boolean srFullEnable = true;
+    @Tunable(title = "Unity SR drizzle (1x detail mode)", category = "Merge", description = "Run the same drizzle at 1x with the current burst frames (no extra frames): the fused field carries genuine multi-frame detail the single-frame render aliases away. The motion trust gate bounds the ghost risk; off keeps the legacy single-frame 1x render", min = 0, max = 1, step = 1, defaultValue = 1)
+    boolean srUnityEnable = true;
     /**
      * Export the fused field at the OUTPUT grid (the drizzle) so the post's
      * below-Nyquist reconstruction represents content above the raw Nyquist
@@ -602,6 +604,10 @@ public class ESD4D extends GLOneScript {
     /** Expected drizzle weight per output texel (frames / expansion^2);
      * the compose's coverage-fallback reference (0 = unknown). */
     public float srCovRef = 0f;
+    /** True when the exported lattice is the output-grid drizzle
+     * (srlattice1, packed halves) rather than the raw-grid lattice: the
+     * post composes it instead of injecting. Forwarded to the pipeline. */
+    public boolean srDrizzlePath = false;
     /** Restored high band + confidence for post (target R32UI, packed half2); may be null. */
     public ByteBuffer srBandBase;
     /** View of {@link #srBandBase}; never freed (see kernelsMapCPU). */
@@ -1682,8 +1688,17 @@ public class ESD4D extends GLOneScript {
             // where the merge's own warp truncates it to integers. The
             // identity ("off") atlas carries no motion, so the SR path stays
             // declined there.
+            // Unity (1x) detail mode: the expansion gate above only covers
+            // genuine upscales, but the same drizzle at the raw grid carries
+            // real multi-frame detail (de-aliasing, recovered top band)
+            // with the frames already captured - no extra frames. The
+            // output grid then equals the raw grid and the post composes
+            // the drizzle exactly like an upscaled one at zoom 1.
+            boolean srUnity = srUnityEnable
+                    && Math.abs(srExpand - 1.0f) <= 0.01f;
+            boolean srEngage = srScaleOk || srUnity;
             if (srFullEnable && images != null && images.size() > 1
-                    && srScaleOk && !srOffAlign && !srAspect
+                    && srEngage && !srOffAlign && !srAspect
                     && parameters != null && parameters.rawSize != null
                     && parameters.rawSize.x > 0 && parameters.rawSize.y > 0
                     && alignmentTex != null && base != null
@@ -1755,6 +1770,7 @@ public class ESD4D extends GLOneScript {
                 }
             } else {
                 Log.d("ESD4D", "Full-SR declined: enable=" + srFullEnable
+                        + " unity=" + srUnityEnable
                         + " frames=" + (images != null ? images.size() : 0)
                         + " expand=" + srExpand + " factor=" + srFFactor
                         + " flow=" + srFlowAlign + " off=" + srOffAlign + " aspect=" + srAspect
@@ -2253,6 +2269,7 @@ public class ESD4D extends GLOneScript {
                 float srCovRef = Math.max(1f, (images != null ? images.size() : 1)
                         * srPerX * srPerY);
                 this.srCovRef = srCovRef;
+                this.srDrizzlePath = drizzle;
                 try {
                     // Drizzle: R32UI packed halves (luma, effective weight)
                     // at the target grid; fallback keeps the raw-grid
@@ -2389,6 +2406,7 @@ public class ESD4D extends GLOneScript {
                 srFullActive = false;
                 srLatticeTexID = 0;
                 srBandTexID = 0;
+                srDrizzlePath = false;
             }
             if (lattice != null) {
                 try {

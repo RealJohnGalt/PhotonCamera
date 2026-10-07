@@ -110,8 +110,11 @@ public final class SRPreResolve extends Node {
         try {
             // True on the output-grid drizzle path (the lattice covers the
             // target grid, not the raw grid): R32UI packed halves
-            // (luma, weight), like the band map.
-            boolean drizzlePath = latticeSize.x > rawSize.x || latticeSize.y > rawSize.y;
+            // (luma, weight), like the band map. The forwarded flag carries
+            // it at 1x, where the sizes alone cannot tell the drizzle apart
+            // from a raw-grid lattice.
+            boolean drizzlePath = pp.srDrizzlePath
+                    || latticeSize.x > rawSize.x || latticeSize.y > rawSize.y;
             if (sharedLattice != 0) {
                 // Shared-group handoff: adopt the merge's lattice texture; no
                 // upload, no ferry. close() deletes it in this context.
@@ -148,7 +151,8 @@ public final class SRPreResolve extends Node {
         // This represents above-raw-Nyquist content instead of folding it into
         // a raw-grid reduce. (The drizzle carries no chroma of its own, so it
         // must never be adopted as the working image directly.)
-        if (latticeSize.x > rawSize.x || latticeSize.y > rawSize.y) {
+        // At 1x the target grid is the raw grid and the same compose applies.
+        if (pp.srDrizzlePath || latticeSize.x > rawSize.x || latticeSize.y > rawSize.y) {
             float[] ablcD = pp.ablcBlack;
             float[] blackD = ablcD != null && ablcD.length >= 3
                     ? new float[]{ablcD[0], ablcD[1], ablcD[2]}

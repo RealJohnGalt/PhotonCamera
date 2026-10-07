@@ -959,6 +959,29 @@ Two shippability conditions came out of the same prototype:
   degree-1 buys nothing. So the inverse is a new-compute-pass R&D item
   with a concrete algorithm and fallback requirement, not a tuning change.
 
+## Unity (1x) detail mode (shipped)
+
+The drizzle engages at 1x with the current burst frames (new
+`srUnityEnable`, default on; no extra frames). The output grid equals the
+raw grid, so the post takes the same compose path as an upscale at zoom 1;
+the forwarded `srDrizzlePath` flag tells the post apart the packed-halves
+drizzle from a raw-grid lattice where sizes alone cannot. Measured
+(9 frames, edge map, vs the fair KernelNet Disabled):
+
+| scene | SR delivery | Disabled | SR corr | band err vs Disabled |
+|---|---|---|---|---|
+| tones | 0.93x | 0.55x | 0.89 / 0.74 | 0.0055 / 0.0082 |
+| diag edge | stair 0.025 vs 0.157, rise 2.06 vs 2.60 | - | 0.75 / 0.61 | 0.0073 / 0.0086 |
+| ramp (no HF) | - | - | - | artifact gates PASS |
+
+Motion safety is the always-on precondition: the absolute motion gate
+(`motion_gate_bench`, all four checks) plus the trust gate bound it, and a
+1x `--alignerr` sweep keeps delivery at 0.90x/0.88 with the band error
+below Disabled. Note the bench's `--alignerr` currently feeds the trust
+textures only, not the deposit geometry (the deposit-displacement sweep
+lives in `sr_bench --reg`); closing that gap is open bench work. `baseline.py`
+tracks `ramp1x9/diag1x9/tones1x9`.
+
 ## High-zoom SR vs the pure anisotropic (srMaxExpand raised to 8x)
 
 Bench (real-texture crop, 9 frames, dump KernelNet map), SR vs the legacy
