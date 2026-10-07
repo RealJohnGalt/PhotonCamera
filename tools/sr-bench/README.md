@@ -854,6 +854,59 @@ the sampling there: a true irregular-sampling inverse (a small regularized
 least-squares solve per output pixel over the local sample set, likely a
 compute pass) is the remaining R&D item, not more gain or a sharper kernel.
 
+## Fix: absolute motion gate on the LK warp and trust (shipped)
+
+A moving subject larger than a refinement cell leaves no neighbour-divergence
+signal, so the drizzle's LK correction warped the subject into the base and
+the trust gate judged the small post-warp residual (`refv.z`) instead of the
+real mismatch - ghosting/blur on motion at 2x that Disabled does not show.
+`merge/srscatter` now computes the pre-refinement residual *before* the warp
+and gates both by it in trust-band units (`SR_MOTION_K1/K2` = 1.0/2.0):
+the warp is scaled by `(1 - motionProb)` and the lf mix takes
+`max(divergence, motionProb)`. `merge/srbayer` (DNG drizzle, whose trust
+already used the pre-refinement residual) gets the same warp gate via an
+early per-channel probe. No new uniforms; refine-off paths are bit-identical.
+
+`motion_gate_bench.py` runs the real `srscatter` on a constant-residual
+field (a constant survives the 3x3 signed mean, so preRes is exact) with a
+uniform mock `srRefMap` (divergence zero by uniformity, isolating the
+absolute gate):
+
+| check | pre-fix | post-fix |
+|---|---|---|
+| motion residual down-weighted (meanW, expect ~0.06) | 0.747 FAIL | 0.044 ok |
+| clean frame keeps weight (expect 0.75) | 0.750 ok | 0.750 ok |
+| warp suppressed on motion (bit-exact) | 0.731 FAIL | 0.000 ok |
+| warp applies when clean (mock path live) | 0.734 ok | 0.734 ok |
+
+`burst_bench --srrefine 1 --refcorr x,y --refresid r` binds the same mock
+for sweep work; `--motionk1/--motionk2` override the thresholds
+(`sr_bench --motionk1/--motionk2` likewise). Broadband scenes cannot show
+this (their signed mean cancels by design); the gate matters at coherent
+moving edges, which is what the constant field isolates.
+
+## Fix: coverage fallback in the drizzle compose (shipped)
+
+The drizzle carried luma only (R32F), so the compose used every texel whole -
+including holes and single-sample cells whose local average is
+sampling-lattice noise, not detail. `merge/srlattice1` now also exports the
+effective weight (the gather's `sum(w)/sum(bw^2)`, the phase-dependent sample
+count the raw-grid lattice already used) packed as two halves into one R32UI
+word - two-channel image formats are not valid ES 3.1 image layouts, so the
+band map's `packHalf2x16` pattern is reused. `srpre/drizzlecompose` blends
+toward the crop reference by `clamp(w/srCovRef)` (`srCovRef` = frames/exp^2,
+the band gate's own reference, forwarded through the pipeline); the band
+deconv is untouched.
+
+Measured (ramp, const map): 3-frame resid 0.0489 -> 0.0187, artifactHF
+0.0045 -> 0.0040; 9-frame resid 0.0457 -> 0.0360. The documented edge-map
+ramp gates still PASS (artifactHF 0.0027 < Disabled 0.0071); diag edge and
+tones delivery are unchanged (band err 0.0028/0.0030 vs Disabled
+0.0043/0.0042). `compose_bench` now uploads the packed RG drizzle and checks
+the fallback directly (zero weight follows the crop at corr 0.997, not the
+drizzle). The `srdump` lattice for the drizzle path is the packed words
+(comp 2); the replay reads the luma channel, so old analysis still loads.
+
 ## High-zoom SR vs the pure anisotropic (srMaxExpand raised to 8x)
 
 Bench (real-texture crop, 9 frames, dump KernelNet map), SR vs the legacy

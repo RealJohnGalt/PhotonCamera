@@ -5,11 +5,16 @@ precision highp float;
 precision highp image2D;
 uniform highp usampler2D srDepV;
 uniform highp usampler2D srDepW;
-// Output: the fused drizzle at the OUTPUT grid, single-channel luma only
-// (R16F). The post composes it with the demosaiced crop's chroma and
-// reconstructs at zoom 1, so above-raw-Nyquist content is represented instead
-// of folded by a raw-grid reduce. Half the memory of the RGBA16F lattice.
-layout(r32f, binding = 0) writeonly uniform highp image2D fusedOut;
+// Output: the fused drizzle at the OUTPUT grid, packed as two halves into
+// one R32UI word (.r luma, .g effective accumulated weight) - the same
+// packing merge/srrecover.glsl uses for the band map (two-channel image
+// formats are not valid image layouts in ES 3.1). The post composes it with
+// the demosaiced crop's chroma and reconstructs at zoom 1, so
+// above-raw-Nyquist content is represented instead of folded by a raw-grid
+// reduce. The weight lets the compose fall back to the reference where the
+// deposit is thin (holes and single-sample cells carry sampling-lattice
+// noise, not detail).
+layout(r32ui, binding = 0) writeonly uniform highp uimage2D fusedOut;
 // CFA comb offset in accumulator texels (2 raw px).
 uniform vec2 srCombOff;
 #define SR_FIXED (1.0 / 65536.0)
@@ -62,6 +67,13 @@ float srLuma(vec2 c, ivec2 cmax, int n) {
     return g.y > 1e-6 ? g.x / g.y : 0.0;
 }
 
+// Effective accumulated weight of the gather: the gather averages
+// ~1/sum(bw^2) output samples, so the compose's coverage fallback tracks the
+// lattice's actual, phase-dependent sample count instead of one texel's.
+float srWeight(vec3 g) {
+    return g.y > 1e-6 ? g.y / max(g.z, 1e-6) : 0.0;
+}
+
 void main() {
     ivec2 site = ivec2(gl_GlobalInvocationID.xy);
     ivec2 grid = imageSize(fusedOut);
@@ -71,7 +83,9 @@ void main() {
     vec2 scale = vec2(accSize) / vec2(grid);
     vec2 c = (vec2(site) + vec2(0.5)) * scale - vec2(0.5);
     int n = int(floor(scale.x + 0.5));
-    float luma = srLuma(c, cmax, n);
+    vec3 gc = srGather(c, cmax, n);
+    float luma = gc.y > 1e-6 ? gc.x / gc.y : 0.0;
+    float wEff = srWeight(gc);
     if (SR_CFA_COMB > 0.0 && srCombOff.x > 0.5) {
         vec2 d = srCombOff;
         // Coverage-weighted comb: srGather returns (sum(v*w), sum(w)); the
@@ -85,10 +99,10 @@ void main() {
         vec3 gD = srGather(c + vec2(0.0, d.y), cmax, n);
         float wsum = gA.y + gB.y + gC.y + gD.y;
         float comb = wsum > 1e-6 ? (gA.x + gB.x + gC.x + gD.x) / wsum : luma;
-        vec3 gc = srGather(c, cmax, n);
         float cov = clamp(wsum / (4.0 * max(gc.y, 1e-6)), 0.0, 1.0);
         luma = mix(luma, comb, clamp(SR_CFA_COMB, 0.0, 1.0) * cov);
     }
     if (!(luma <= 65504.0)) luma = 0.0;
-    imageStore(fusedOut, site, vec4(luma, 0.0, 0.0, 1.0));
+    if (!(wEff <= 65504.0)) wEff = 0.0;
+    imageStore(fusedOut, site, uvec4(packHalf2x16(vec2(luma, wEff))));
 }

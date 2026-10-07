@@ -538,6 +538,7 @@ public class HdrxProcessor extends ProcessorBase {
         pipeline.srLatticeSize = esd4d != null ? esd4d.srLatticeSize : null;
         pipeline.srLatticeBase = esd4d != null ? esd4d.srLatticeBase : null;
         pipeline.srLatticeTexID = esd4d != null ? esd4d.srLatticeTexID : 0;
+        pipeline.srCovRef = esd4d != null ? esd4d.srCovRef : 0f;
         pipeline.srBandCPU = esd4d != null ? esd4d.srBandCPU : null;
         pipeline.srBandSize = esd4d != null ? esd4d.srBandSize : null;
         pipeline.srBandBase = esd4d != null ? esd4d.srBandBase : null;
@@ -558,6 +559,7 @@ public class HdrxProcessor extends ProcessorBase {
             esd4d.srLatticeSize = null;
             esd4d.srLatticeBase = null;
             esd4d.srLatticeTexID = 0;
+            esd4d.srCovRef = 0f;
             esd4d.srBandCPU = null;
             esd4d.srBandSize = null;
             esd4d.srBandBase = null;

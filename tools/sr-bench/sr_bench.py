@@ -927,10 +927,18 @@ def compose_bench(ctx, raw, out, exp):
     itex = ctx.texture((raw, raw), 4, np.ascontiguousarray(np.stack(
         [crop[..., 0], crop[..., 1], crop[..., 2], np.ones_like(yC)], -1)
         .astype(np.float16)).tobytes(), dtype="f2")
-    # drizzle: output grid, luma only (R32F), a distinct pattern
+    # drizzle: output grid, R32UI packed halves (luma + effective weight,
+    # the device's srlattice1 output), a distinct luma pattern at full
+    # coverage so the fallback stays out of the way (weight >> srCovRef).
     yy2, xx2 = np.mgrid[0:out, 0:out].astype(np.float64)
     yD = 0.45 + 0.12 * np.cos(2 * np.pi * 9.0 * xx2 / out)
-    dtex = ctx.texture((out, out), 1, np.ascontiguousarray(yD.astype(np.float32)).tobytes(), dtype="f4")
+    wD = np.full((out, out), 4.0)
+
+    def pack_dw(y, w):
+        h = np.stack([y, w], -1).astype(np.float16)
+        return np.ascontiguousarray(h).view(np.uint32).tobytes()
+
+    dtex = ctx.texture((out, out), 1, pack_dw(yD, wD), dtype="u4")
     src = expand_imports(open(os.path.join(ASSETS, "srpre/drizzlecompose.glsl")).read().lstrip("\n"))
     vsrc = ("#version 310 es\nin vec2 in_pos;\n"
             "void main() { gl_Position = vec4(in_pos, 0.0, 1.0); }\n")
@@ -948,6 +956,7 @@ def compose_bench(ctx, raw, out, exp):
     dtex.use(1)
     prog["srBlack"] = (0.0, 0.0, 0.0)
     prog["srPerOut"] = (1.0 / exp, 1.0 / exp)
+    prog["srCovRef"] = 1.0
     fbo.use()
     fbo.clear(0.0, 0.0, 0.0, 1.0)
     vao.render(moderngl.TRIANGLES)
@@ -956,6 +965,28 @@ def compose_bench(ctx, raw, out, exp):
     ins = (slice(8, -8), slice(8, -8))
     yOut = o[..., 0] * 0.2126 + o[..., 1] * 0.7152 + o[..., 2] * 0.0722
     yErr = float(np.max(np.abs(yOut[ins] - yD[ins])))
+    # Coverage fallback: zero weight must follow the crop, not the drizzle.
+    dtex0 = ctx.texture((out, out), 1, pack_dw(yD, np.zeros((out, out))),
+                        dtype="u4")
+    tgt0 = ctx.texture((out, out), 4, dtype="f2")
+    fbo0 = ctx.framebuffer(color_attachments=[tgt0])
+    dtex0.use(1)
+    fbo0.use()
+    fbo0.clear(0.0, 0.0, 0.0, 1.0)
+    vao.render(moderngl.TRIANGLES)
+    o0 = np.frombuffer(fbo0.read(components=4, dtype="f2"), dtype=np.float16
+                       ).reshape(out, out, 4)[..., :3].astype(np.float64)
+    yOut0 = o0[..., 0] * 0.2126 + o0[..., 1] * 0.7152 + o0[..., 2] * 0.0722
+    yC0 = crop[..., 0] * 0.2126 + crop[..., 1] * 0.7152 + crop[..., 2] * 0.0722
+    yCUp = np.asarray(Image.fromarray((np.clip(yC0, 0, 4) * 64).astype(np.uint8)
+                                      ).resize((out, out), Image.BILINEAR),
+                      dtype=np.float64) / 64.0
+    fb_corr = float(np.corrcoef(yOut0[ins].ravel(), yCUp[ins].ravel())[0, 1])
+    fb_driz = float(np.corrcoef(yOut0[ins].ravel(), yD[ins].ravel())[0, 1])
+    print("  compose fallback: corr(crop)=%.4f corr(drizzle)=%.4f" % (fb_corr, fb_driz))
+    fb_ok = (fb_corr > 0.98) and (fb_driz < 0.5)
+    for t in (dtex0, tgt0):
+        t.release()
     # chroma of the output vs the crop's (both = crop - its luma)
     ycIn = crop[..., 0] * 0.2126 + crop[..., 1] * 0.7152 + crop[..., 2] * 0.0722
     coIn = crop - ycIn[..., None]
@@ -1012,7 +1043,7 @@ def compose_bench(ctx, raw, out, exp):
     chComb = float(F[band].mean() / max(F[low].mean(), 1e-9))
     print("  compose: luma max err=%.4f | chroma max err=%.4f | green excess=%.4f | "
           "chroma-pitch comb=%.2f" % (yErr, chErr, gdom, chComb))
-    ok = (yErr < 0.03) and (chErr < 0.05) and (abs(gdom) < 0.02) and (chComb < 0.5)
+    ok = (yErr < 0.03) and (chErr < 0.05) and (abs(gdom) < 0.02) and (chComb < 0.5) and fb_ok
     return yErr, chErr, gdom, ok
 
 

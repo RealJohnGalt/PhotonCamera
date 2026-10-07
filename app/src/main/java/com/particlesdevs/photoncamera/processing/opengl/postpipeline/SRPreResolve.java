@@ -108,16 +108,29 @@ public final class SRPreResolve extends Node {
         }
 
         try {
+            // True on the output-grid drizzle path (the lattice covers the
+            // target grid, not the raw grid): R32UI packed halves
+            // (luma, weight), like the band map.
+            boolean drizzlePath = latticeSize.x > rawSize.x || latticeSize.y > rawSize.y;
             if (sharedLattice != 0) {
                 // Shared-group handoff: adopt the merge's lattice texture; no
                 // upload, no ferry. close() deletes it in this context.
                 latticeTex = new GLTexture(sharedLattice, latticeSize,
-                        new GLFormat(GLFormat.DataType.FLOAT_16, 4));
+                        new GLFormat(drizzlePath
+                                ? GLFormat.DataType.UNSIGNED_32 : GLFormat.DataType.FLOAT_16,
+                                drizzlePath ? 1 : 4));
             } else {
                 latticeTex = new GLTexture(latticeSize,
-                        new GLFormat(GLFormat.DataType.FLOAT_16, 4), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
+                        new GLFormat(drizzlePath
+                                ? GLFormat.DataType.UNSIGNED_32 : GLFormat.DataType.FLOAT_16,
+                                drizzlePath ? 1 : 4),
+                        null, GL_NEAREST, GL_CLAMP_TO_EDGE);
                 ownedBase.position(0);
-                latticeTex.loadRawHalf(ownedBase);
+                if (drizzlePath) {
+                    latticeTex.loadRawUint(ownedBase);
+                } else {
+                    latticeTex.loadRawHalf(ownedBase);
+                }
             }
         } catch (Throwable t) {
             Log.e(Name, "SR pre-resolve lattice adopt failed, passing through", t);
@@ -174,6 +187,10 @@ public final class SRPreResolve extends Node {
             glProg.setVar("srBlack", blackD);
             glProg.setVar("srPerOut", rawSize.x / (float) latticeSize.x,
                     rawSize.y / (float) latticeSize.y);
+            // Coverage reference (expected drizzle weight per texel): thin
+            // cells fall back toward the reference instead of carrying the
+            // sampling grid. Unknown (0) keeps the one-full-sample scale.
+            glProg.setVar("srCovRef", pp.srCovRef > 0f ? pp.srCovRef : 1f);
             WorkingTexture = outD;
             glProg.drawBlocks(outD);
             glProg.closed = true;

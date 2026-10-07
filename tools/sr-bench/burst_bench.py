@@ -490,9 +490,12 @@ def quant(a):
 
 
 def run_drizzle(ctx, out, exp, depv, depw, comb):
+    """The real merge/srlattice1 reduce: returns (luma, weight) at the output
+    grid, mirroring the device's packed-halves drizzle (luma + effective
+    weight in one R32UI word, like the band map)."""
     tex_v = ctx.texture((out, out), 1, quant(depv).tobytes(), dtype="u4")
     tex_w = ctx.texture((out, out), 1, quant(depw).tobytes(), dtype="u4")
-    dtex = ctx.texture((out, out), 1, dtype="f4")
+    dtex = ctx.texture((out, out), 1, dtype="u4")
     dtex.bind_to_image(0, read=False, write=True)
     prog = ctx.compute_shader(SB.load_compute(
         "merge/srlattice1.glsl", defines={"SR_CFA_COMB": "%.4f" % comb}))
@@ -506,17 +509,28 @@ def run_drizzle(ctx, out, exp, depv, depw, comb):
     except KeyError:
         pass
     prog.run(out, out, 1)
-    arr = np.frombuffer(dtex.read(), dtype=np.float32).reshape(out, out).astype(np.float64)
+    words = np.frombuffer(dtex.read(), dtype=np.uint32).reshape(out, out)
+    halves = words.reshape(out, out, 1).view(np.float16).reshape(out, out, 2)
+    arr = halves.astype(np.float64)
     for t in (tex_v, tex_w, dtex):
         t.release()
-    return arr
+    return arr[..., 0].copy(), arr[..., 1].copy()
 
 
-def run_compose(ctx, drizzle, crop, exp):
+def pack_halves(a, b):
+    """Pack two float32 fields into R32UI words (two fp16 halves)."""
+    h = np.stack([a, b], -1).astype(np.float16)
+    return np.ascontiguousarray(h).view(np.uint32)
+
+
+def run_compose(ctx, drizzle, driz_w, crop, exp, cov_ref):
+    """The real srpre/drizzlecompose: drizzle luma + coverage weight with the
+    crop chroma, falling back toward the crop where the deposit is thin
+    (cov_ref = expected weight per texel, frames/exp^2 on device)."""
     out = drizzle.shape[0]
     raw = crop.shape[0]
-    ftex = ctx.texture((out, out), 1, np.ascontiguousarray(
-        drizzle.astype(np.float32)).tobytes(), dtype="f4")
+    ftex = ctx.texture((out, out), 1, pack_halves(drizzle, driz_w).tobytes(),
+                       dtype="u4")
     ctex = ctx.texture((raw, raw), 4, f2(np.stack(
         [crop[..., 0], crop[..., 1], crop[..., 2], np.ones_like(crop[..., 0])], -1)), dtype="f2")
     src = SB.expand_imports(open(os.path.join(
@@ -537,6 +551,7 @@ def run_compose(ctx, drizzle, crop, exp):
     ftex.use(1)
     prog["srBlack"] = (0.0, 0.0, 0.0)
     prog["srPerOut"] = (1.0 / exp, 1.0 / exp)
+    prog["srCovRef"] = max(cov_ref, 1e-3)
     fbo.use()
     fbo.clear(0.0, 0.0, 0.0, 1.0)
     vao.render(moderngl.TRIANGLES)
@@ -1334,9 +1349,14 @@ def main():
         depv = blur_droplet(depv, "gauss", args.splatgauss)
         depw = blur_droplet(depw, "gauss", args.splatgauss)
 
-    drizzle = run_drizzle(ctx, out, exp, depv, depw, args.comb)
+    drizzle, driz_w = run_drizzle(ctx, out, exp, depv, depw, args.comb)
     crop = demosaic_bilinear(raw, packed0)
-    composed = run_compose(ctx, drizzle, crop, exp)
+    # Coverage reference, same convention as the device (frames/exp^2).
+    cov_ref = max(1.0, args.frames / float(exp * exp))
+    composed = run_compose(ctx, drizzle, driz_w, crop, exp, cov_ref)
+    print("  drizzle: weight mean=%.3f p10=%.3f | fallback alpha mean=%.3f" % (
+        float(driz_w.mean()), float(np.quantile(driz_w, 0.1)),
+        float(np.clip(driz_w / cov_ref, 0.0, 1.0).mean())))
     kmap_vals = {"const": (0.4, 0.4), "edge": (0.8, 0.25), "small": (0.1, 0.1)}.get(
         args.kmap, (0.4, 0.4))
     alpha = None
@@ -1393,6 +1413,8 @@ def main():
                             noise=args.noise, seed=args.seed, kmap=args.kmap,
                             elongcap=args.elongcap, gsplit=args.gsplit,
                             final=final_st,
+                            drizWmean=float(driz_w.mean()),
+                            drizWp10=float(np.quantile(driz_w, 0.1)),
                             gates={n: bool(g) for n, g in gates}), _f,
                        indent=1, sort_keys=True)
     if args.save:

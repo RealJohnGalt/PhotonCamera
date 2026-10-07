@@ -573,6 +573,13 @@ public class PostPipeline extends GLBasePipeline {
      * the GPU upload, mirroring the KernelNet params ferry.
      */
     public java.nio.ByteBuffer srLatticeBase;
+    /**
+     * Expected drizzle weight per output texel (frames / expansion^2, the
+     * same coverage reference the merge uses for the band gate). The compose
+     * falls back toward the reference where the deposit is thinner than
+     * this; 0 = unknown (the compose treats one full sample as full cover).
+     */
+    public float srCovRef = 0f;
     /** Restored high band + confidence (target R32UI packed half2); consumed by {@link SRBandApply}. */
     public java.nio.ShortBuffer srBandCPU;
     /** Size of {@link #srBandCPU} (target grid). */
@@ -1597,6 +1604,7 @@ public class PostPipeline extends GLBasePipeline {
         }
         srLatticeCPU = null;
         srLatticeSize = null;
+        srCovRef = 0f;
         if (srBandBase != null) {
             Allocator.free(srBandBase);
             srBandBase = null;

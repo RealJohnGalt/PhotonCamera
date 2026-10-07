@@ -591,12 +591,17 @@ public class ESD4D extends GLOneScript {
      */
     GLTexture srDepV;
     GLTexture srDepW;
-    /** Low-band fused lattice for post (raw grid RGBA16F: luma, weight); may be null. */
+    /** Low-band fused lattice for post (raw grid RGBA16F halves, or
+     * output-grid drizzle R32UI packed halves: luma, effective weight);
+     * may be null. */
     public ByteBuffer srLatticeBase;
     /** View of {@link #srLatticeBase}; never freed (see kernelsMapCPU). */
     public ShortBuffer srLatticeCPU;
-    /** Size of {@link #srLatticeCPU} (raw grid). */
+    /** Size of {@link #srLatticeCPU} (raw grid, or target grid on the drizzle path). */
     public Point srLatticeSize;
+    /** Expected drizzle weight per output texel (frames / expansion^2);
+     * the compose's coverage-fallback reference (0 = unknown). */
+    public float srCovRef = 0f;
     /** Restored high band + confidence for post (target R32UI, packed half2); may be null. */
     public ByteBuffer srBandBase;
     /** View of {@link #srBandBase}; never freed (see kernelsMapCPU). */
@@ -2240,11 +2245,20 @@ public class ESD4D extends GLOneScript {
                 // failure.
                 boolean drizzle = srOutputDrizzle;
                 Point latSize = drizzle ? new Point(srFullTarget) : new Point(parameters.rawSize);
+                // Expected drizzle weight per output texel (frames /
+                // expansion^2): the band gate and the compose's coverage
+                // fallback share this reference.
+                float srPerX = srFullW / (float) srFullTarget.x;
+                float srPerY = srFullH / (float) srFullTarget.y;
+                float srCovRef = Math.max(1f, (images != null ? images.size() : 1)
+                        * srPerX * srPerY);
+                this.srCovRef = srCovRef;
                 try {
-                    // Drizzle: R32F luma at the target grid (half the memory of
-                    // an RGBA16F lattice); fallback keeps the raw-grid lattice.
+                    // Drizzle: R32UI packed halves (luma, effective weight)
+                    // at the target grid; fallback keeps the raw-grid
+                    // RGBA16F lattice.
                     lattice = new GLTexture(new Point(latSize),
-                            new GLFormat(drizzle ? GLFormat.DataType.FLOAT_32 : GLFormat.DataType.FLOAT_16, drizzle ? 1 : 4),
+                            new GLFormat(drizzle ? GLFormat.DataType.UNSIGNED_32 : GLFormat.DataType.FLOAT_16, drizzle ? 1 : 4),
                             null, GL_NEAREST, GL_CLAMP_TO_EDGE);
                 } catch (Throwable t) {
                     Log.e("ESD4D", "output-grid drizzle alloc failed, using raw-grid lattice", t);
@@ -2271,10 +2285,6 @@ public class ESD4D extends GLOneScript {
                 // (b) Restored band above the raw Nyquist + confidence.
                 band = new GLTexture(new Point(srFullTarget),
                         new GLFormat(GLFormat.DataType.UNSIGNED_32, 1), null, GL_NEAREST, GL_CLAMP_TO_EDGE);
-                float srPerX = srFullW / (float) srFullTarget.x;
-                float srPerY = srFullH / (float) srFullTarget.y;
-                float srCovRef = Math.max(1f, (images != null ? images.size() : 1)
-                        * srPerX * srPerY);
                 glProg.setLayout(8, 8, 1);
                 glProg.useAssetProgram("merge/srrecover", true);
                 glProg.setTexture("srDepV", srDepV);
@@ -2298,9 +2308,15 @@ public class ESD4D extends GLOneScript {
                                         + ", \"srTrustBand\": " + srTrustBand
                                         + ", \"srTrustFloor\": " + srTrustFloor
                                         + ", \"srGainMax\": 2.2}");
-                        com.particlesdevs.photoncamera.util.SrDump.dumpTexture(ac, lattice,
-                                "lattice", 4, android.opengl.GLES30.GL_RGBA,
-                                android.opengl.GLES30.GL_HALF_FLOAT);
+                        if (drizzle) {
+                            com.particlesdevs.photoncamera.util.SrDump.dumpTexture(ac, lattice,
+                                    "lattice", 2, android.opengl.GLES30.GL_RED_INTEGER,
+                                    android.opengl.GLES30.GL_UNSIGNED_INT);
+                        } else {
+                            com.particlesdevs.photoncamera.util.SrDump.dumpTexture(ac, lattice,
+                                    "lattice", 4, android.opengl.GLES30.GL_RGBA,
+                                    android.opengl.GLES30.GL_HALF_FLOAT);
+                        }
                         com.particlesdevs.photoncamera.util.SrDump.dumpTexture(ac, band,
                                 "band", 2, android.opengl.GLES30.GL_RED_INTEGER,
                                 android.opengl.GLES30.GL_UNSIGNED_INT);
@@ -2332,10 +2348,13 @@ public class ESD4D extends GLOneScript {
                     lattice = null;
                     band = null;
                 } else {
-                    // Compact ferries: the lattice (raw RGBA16F halves) and the
-                    // band+gate (target packed halves).
+                    // Compact ferries: the lattice (raw RGBA16F halves, or
+                    // drizzle R32UI packed halves) and the band+gate
+                    // (target packed halves).
                     lattice.BufferLoad();
-                    ByteBuffer lRead = lattice.textureBufferHalfFloatNative();
+                    ByteBuffer lRead = drizzle
+                            ? lattice.textureBufferUintNative()
+                            : lattice.textureBufferHalfFloatNative();
                     band.BufferLoad();
                     ByteBuffer bRead = band.textureBufferUintNative();
                     boolean srLOk = lRead != null;
