@@ -907,6 +907,58 @@ the fallback directly (zero weight follows the crop at corr 0.997, not the
 drizzle). The `srdump` lattice for the drizzle path is the packed words
 (comp 2); the replay reads the luma channel, so old analysis still loads.
 
+## Detail headroom I: uniform gain scaling rejected (measured)
+
+Swept `--gainmax` 1.0/2.2/3.0/3.5 at 9 and 40 frames (tones, edge map,
+post-band delivery vs the aperture truth):
+
+| frames | gain | delivery amp | corr | 0.25-0.32 | 0.32-0.5 | below-Nyq amp |
+|---|---|---|---|---|---|---|
+| 9 | 1.0 | 0.48x | 0.51 | 0.63 | 0.29 | 1.05x |
+| 9 | 2.2 | 0.62x | 0.53 | 0.66 | 0.28 | 1.25x |
+| 9 | 3.0 | 0.69x | 0.51 | 0.64 | 0.27 | 1.30x |
+| 40 | 2.2 | 0.60x | 0.59 | 0.69 | 0.35 | 1.36x |
+| 40 | 3.0 | 0.69x | 0.55 | 0.66 | 0.31 | 1.41x |
+| 40 | 3.5 | 0.73x | 0.54 | 0.65 | 0.30 | 1.42x |
+
+More frames do NOT buy a higher uniform cap: amplitude rises but the top
+sub-band correlation falls at every frame count (the extra gain lands on
+moire, not signal). The 2.2 cap stands. Side finding: at 40f the
+below-Nyquist band over-delivers (1.21x recon-only, 1.36-1.42x with the
+band) - an amplitude-calibration wart, not a correlation loss; left alone
+because the photo-scene kernel validation outranks synthetic tones here.
+
+## Detail headroom II: MLS inverse prototype (`mls_proto.py`)
+
+The drizzle is a normalized local average (MLS degree-0) over the deposited
+samples; it cannot invert the sampling above ~0.32 cyc/out. The prototype
+fits a per-output-pixel ridge least-squares polynomial over the SAME
+irregular samples (positions mirror `srscatter` exactly) and scores it with
+the standard band metrics. Degree-1 does nothing (gradients don't deblur a
+symmetric PSF); degree-2 (curvature, ridge 1e-3 x weight sum, radius 2.5)
+does:
+
+| frames | deg0 hi corr/amp | deg2 hi corr/amp | overall corr |
+|---|---|---|---|
+| 9 | 0.29 / 0.26x | 0.81 / 0.69x | 0.88 -> 0.97 |
+| 40 + noise + handheld | 0.47 / 0.18x | 0.74 / 0.73x | 0.92 -> 0.96 |
+
+Safe on smooth content (ramp invented-HF 0.00007 vs 0.00017 for deg-0).
+Two shippability conditions came out of the same prototype:
+
+- Registration sensitivity: with per-frame position errors and uniform
+  weights, deg-2 corr collapses faster than deg-0 (reg 1: 0.51 vs 0.63)
+  while keeping high amplitude - confident wrong detail. The design must
+  blend deg-2/deg-0 by the misregistration signal the trust gate already
+  measures (the new motionProb), not by sample weights alone.
+- Edge ringing: ~4.5% overshoot at a hard step (deg-0: 0) - needs the
+  Weber-cap treatment the band deconv already has.
+- Device cost: the fit needs sample moments the sum accumulators discard
+  (6 value + up to 21 normal-equation terms for degree-2). A diagonal or
+  degree-1-only form fits the existing textures but the prototype shows
+  degree-1 buys nothing. So the inverse is a new-compute-pass R&D item
+  with a concrete algorithm and fallback requirement, not a tuning change.
+
 ## High-zoom SR vs the pure anisotropic (srMaxExpand raised to 8x)
 
 Bench (real-texture crop, 9 frames, dump KernelNet map), SR vs the legacy
