@@ -999,6 +999,25 @@ textures only, not the deposit geometry (the deposit-displacement sweep
 lives in `sr_bench --reg`); closing that gap is open bench work. `baseline.py`
 tracks `ramp1x9/diag1x9/tones1x9`.
 
+## Refine capture range: adequate, cell-insensitive (no change)
+
+`--refsweep` runs cells {2,4,8} against planted shifts {0..3.0} raw px
+(recovered vs expected d/2 packed):
+
+| planted | cell 2 | cell 4 | cell 8 |
+|---|---|---|---|
+| 0.6 (exp 0.30) | 0.344 | 0.358 | 0.373 |
+| 1.2 (exp 0.60) | 0.615 | 0.616 | 0.666 |
+| 2.0 (exp 1.00) | 0.607 | 0.431 | 0.626 |
+| 3.0 (exp 1.50) | 0.160 | 0.060 | 0.128 |
+
+All cells cover the working range (0-1.2 px, what the atlas leaves behind)
+and all break at the same place (2-3 px: the scene's quarter-period
+ambiguity at 0.1 cyc/px, not the fit). Capture is not cell-limited, so no
+grid change; a coarse-to-fine extension would only help shifts the atlas
+never leaves. Static pairs stay at 0.000 on every cell. `--refcell` /
+`--refnoise` allow re-sweeps; the build gate stays on the default five.
+
 ## Moving-block ghost scene + K1/K2 validation (shipped defaults kept)
 
 `--block 1` overlays a coherently translating textured square (any scene),

@@ -1143,13 +1143,19 @@ def drizzle_recon_bench(ctx, raw, out, exp, sigma_scale, sigma_min, sharp_amt, a
     return c0, c1, (c1 < c0 * 0.6)
 
 
-def refine_bench(ctx, raw, seed=11):
+def refine_bench(ctx, raw, seed=11, cell=4, noise=0.002, cases=None,
+                 label=""):
     """Run the real merge/srrefine.glsl on a packed (base, alter) pair with a
     planted sub-pixel translation and photometric gain, and report what it
     recovers. This is the alignment tuner: capture range, confidence gating
-    and the photometric term are all visible here."""
+    and the photometric term are all visible here.
+
+    cell: srRefCell (packed texels per fit cell); noise: per-site Gaussian
+    std; cases: [(shift_raw_px, gain)] list (default the shipped five). The
+    shipped gate (static ~0, recovery within 1.6x, gain in clamp range)
+    applies to whatever cases are passed, so extended sweeps report their
+    own pass/fail without moving the build gate (main gates the default)."""
     p = raw // 2
-    cell = 4                 # srRefCell (packed texels per fit cell)
     rng = np.random.default_rng(seed)
     # Two strong orthogonal components: gradients constrain both axes, so the
     # fit is observable everywhere (a random-direction scene can leave det
@@ -1173,7 +1179,7 @@ def refine_bench(ctx, raw, seed=11):
             sx = (2 * np.arange(p) + cx)[None, :] - dx
             sy = (2 * np.arange(p) + cy)[:, None] - dy
             out[..., c] = (gain * scene(sx, sy)
-                           + 0.002 * rng.standard_normal((p, p))).astype(np.float16)
+                           + noise * rng.standard_normal((p, p))).astype(np.float16)
         return ctx.texture((p, p), 4, np.ascontiguousarray(out).tobytes(), dtype="f2")
 
     prog = ctx.compute_shader(load_compute("merge/srrefine.glsl"))
@@ -1202,7 +1208,8 @@ def refine_bench(ctx, raw, seed=11):
     # it), recover a planted sub-pixel shift with the right sign and roughly
     # the right size, leave a static pair alone, and follow the photometric
     # gain. d_raw is in raw px; the shader reports packed (half-raw) texels.
-    cases = [(0.0, 1.0), (0.6, 1.0), (1.2, 1.0), (0.6, 1.05), (0.6, 0.95)]
+    if cases is None:
+        cases = [(0.0, 1.0), (0.6, 1.0), (1.2, 1.0), (0.6, 1.05), (0.6, 0.95)]
     rows = []
     worst = 0.0
     for d_raw, g in cases:
@@ -1229,7 +1236,8 @@ def refine_bench(ctx, raw, seed=11):
     g_plant = 1.05
     dx0, dy0, gain0, resid0 = rows[0][2], rows[0][3], rows[0][4], rows[0][5]
     dx1, dy1, gain1, resid1 = rows[3][2], rows[3][3], rows[3][4], rows[3][5]
-    print("  srrefine sweep (planted raw px / recovered packed):")
+    print("  srrefine sweep%s (planted raw px / recovered packed):"
+          % ((" " + label) if label else ""))
     for d_raw, g, dx, dy, gain, resid in rows:
         print("    d_raw=%.2f gain=%.2f -> dx=%.3f dy=%.3f gain=%.3f resid=%.4f"
               % (d_raw, g, dx, dy, gain, resid))
@@ -1448,6 +1456,15 @@ def main():
                     help="absolute reconstruction sigma floor (crop px; app absMinPx=0.25)")
     ap.add_argument("--sharpamt", type=float, default=1.75,
                     help="reconstruction acutance (app SR = 1.4 * 1.25 = 1.75)")
+    ap.add_argument("--refcell", type=int, default=4,
+                    help="srrefine cell size in packed texels for the sweep "
+                         "(shipped 4 = tile/4; the build gate always uses 4)")
+    ap.add_argument("--refnoise", type=float, default=0.002,
+                    help="per-site noise std for the refine bench (shipped 0.002)")
+    ap.add_argument("--refsweep", action="store_true",
+                    help="capture-range table: cells {2,4,8} x shifts "
+                         "{0,0.6,1.2,2.0,3.0} raw px (informational; the "
+                         "build gate stays on the default five cases)")
     ap.add_argument("--replay", default="",
                     help="replay a device SrDump folder (kernels/lattice/band + params.json)")
     args = ap.parse_args()
@@ -1847,6 +1864,14 @@ def main():
     print("  srrefine: static dx=%.3f (must be ~0) | planted d=%.2fpx gain=%.3f -> "
           "dx=%.3f resid=%.4f %s"
           % (dx, d_plant, g_plant, dx1, resid1, "ok" if refine_ok else "FAIL"))
+    if args.refsweep or args.refcell != 4 or args.refnoise != 0.002:
+        cases = [(0.0, 1.0), (0.6, 1.0), (1.2, 1.0), (2.0, 1.0), (3.0, 1.0)]
+        cells = [2, 4, 8] if args.refsweep else [args.refcell]
+        for cell in cells:
+            _, _, _, _, _, _, _, _, cell_ok = refine_bench(
+                ctx, raw, cell=cell, noise=args.refnoise, cases=cases,
+                label="cell=%d noise=%.4f" % (cell, args.refnoise))
+            print("    => cell=%d %s" % (cell, "ok" if cell_ok else "FAIL"))
 
     print("srrecover bench: frames=%d noise=%.3f exp=%d" % (args.frames, args.noise, exp))
     print("  recovered-band corr=%.3f amplitude ratio=%.3f mean gate=%.3f"
