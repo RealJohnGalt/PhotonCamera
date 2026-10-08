@@ -1062,6 +1062,41 @@ regime effects. Needed: an `SrDump` (FORCE=true) of a failing shot
 crop of the pixelated region - the replay path (`sr_bench --replay`)
 can then drive the exact failing lattice instead of a synthetic guess.
 
+## Dump-driven pixelation hunt (device honeycomb + foliage)
+
+A 17-frame 2x `SrDump` (grille + plant + table objects) finally put real
+failing data under the bench. Integrity: healthy (no non-finite, weight
+mean 4.22 ~= 4.25 expected, zero holes; band gate mean 0.048 - the
+recovery is nearly shut off globally). Method: `replay_crop.py` renders
+dump crops through the real aniso + band-deconv (const/smoothed/rho-only
+map variants, acutance kill-switch, float dumps for spectra).
+
+Findings, in order:
+
+- Honeycomb window: sharp peak at 0.468 cyc/out (near-vertical), i.e. a
+  folded 6th harmonic sitting at the deposit-lattice edge. Band layer
+  innocent (aniso ~= final). Map smoothing "looked cleaner" but moved no
+  spectral metric (alias/fund ratio unchanged) - softening, not fixing;
+  rho-only smoothing and acutance-off change nothing: the driver is
+  kernel sharpness rendering aliased harmonics crisply, not direction
+  noise and not acutance.
+- Foliage window: TWO sharp near-Nyquist lines (0.466 horizontal,
+  0.482 vertical) in the drizzle; the aniso kills ~80-92% (survival
+  0.18-0.22 uniformly). NOT at CFA pitch (0.5) - folded drizzle-field
+  content above output Nyquist, not srluma beads (separate issue).
+- The `SR_LATTICE_AA` read-filter line is closed as a blanket fix: it
+  costs more genuine delivery than residue on every scene. Revival needs
+  the per-pixel diversity/registration confidence signal.
+- Consolidated R&D item: a per-pixel sampling-diversity + registration
+  confidence map feeding the band gate, the fallback, and (later) model
+  order. The dump supplies the numbers that justify it: fold lines at
+  0.466-0.482, ~20% top-band survival into the output, gate open
+  (0.17-0.49) exactly where the content is phase-unstable.
+
+`--scene honey` (sharp hex holes, pitch-calibrated to the dump) and
+`--kmapsig` stay as the scoring rigs; `replay_crop.py` stays as the
+dump-analysis tool.
+
 ## Moving-block ghost scene + K1/K2 validation (shipped defaults kept)
 
 `--block 1` overlays a coherently translating textured square (any scene),

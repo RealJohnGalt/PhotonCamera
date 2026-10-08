@@ -111,6 +111,15 @@ def build_scene(args, rng):
         fy = np.array([])
         ph = np.array([])
         amp = np.array([])
+    elif args.scene == "honey":
+        # Sharp hexagonal hole lattice (grille analog, calibrated to a
+        # device dump: pitch ~6.3 raw px): generated as an output-grid truth
+        # image (sharp holes + aperture blur) sampled by photo_field, so
+        # the strong high harmonics a thresholded pattern carries survive.
+        fx = np.array([])
+        fy = np.array([])
+        ph = np.array([])
+        amp = np.array([])
     else:
         raise SystemExit("unknown scene " + args.scene)
     fraw = np.hypot(fx, fy) * args.exp
@@ -224,8 +233,29 @@ def block_boxes(args, frames):
     return boxes
 
 
+def make_honey(args):
+    """Sharp hexagonal hole lattice as an output-grid truth image (dump
+    honeycomb: hole pitch ~6.3 raw px): dark holes on bright metal,
+    aperture-blurred, normalized like load_photo. Sampled by photo_field,
+    so the thresholded pattern's strong high harmonics survive (the
+    analytic path would MTF-away each component instead)."""
+    n = args.raw * args.exp
+    P = 6.3 * args.exp
+    yy, xx = np.mgrid[0:n, 0:n].astype(np.float64)
+    u = xx / P
+    v = (yy - xx * 0.5) / (P * np.sqrt(3.0) / 2.0)
+    c = np.cos(2 * np.pi * u) + np.cos(2 * np.pi * v) + np.cos(2 * np.pi * (u + v))
+    holes = c > 1.0
+    p = np.where(holes, 0.25, 1.0)
+    psf = np.sqrt(1.0 / 12.0 + SB.LENS_SIGMA_RAW ** 2) * args.exp
+    p = SB.blur(p, psf)
+    p = p - p.mean()
+    p = p / max(float(p.std()), 1e-9) * 0.35 + 1.2
+    return p
+
+
 def sample_scene(fx, fy, ph, amp, mtf, x, y, args, frame=0):
-    if args.scene == "photo":
+    if args.scene in ("photo", "honey"):
         return photo_field(args, x, y) + block_field(args, x, y, frame)
     v = np.zeros(np.broadcast(x, y).shape)
     for k in range(len(fx)):
@@ -234,7 +264,7 @@ def sample_scene(fx, fy, ph, amp, mtf, x, y, args, frame=0):
 
 
 def scene_luma(fx, fy, ph, amp, x, y, args, frame=0):
-    if args.scene == "photo":
+    if args.scene in ("photo", "honey"):
         return photo_field(args, x, y) + block_field(args, x, y, frame)
     v = np.zeros(np.broadcast(x, y).shape)
     for k in range(len(fx)):
@@ -656,16 +686,18 @@ def quant(a):
     return np.clip(np.round(a * SB.FIXED), 0, 4.0e9).astype(np.uint32)
 
 
-def run_drizzle(ctx, out, exp, depv, depw, comb):
+def run_drizzle(ctx, out, exp, depv, depw, comb, lat_aa=0):
     """The real merge/srlattice1 reduce: returns (luma, weight) at the output
     grid, mirroring the device's packed-halves drizzle (luma + effective
-    weight in one R32UI word, like the band map)."""
+    weight in one R32UI word, like the band map). lat_aa enables the
+    anti-aliased (3x3 box) drizzle read prototype."""
     tex_v = ctx.texture((out, out), 1, quant(depv).tobytes(), dtype="u4")
     tex_w = ctx.texture((out, out), 1, quant(depw).tobytes(), dtype="u4")
     dtex = ctx.texture((out, out), 1, dtype="u4")
     dtex.bind_to_image(0, read=False, write=True)
     prog = ctx.compute_shader(SB.load_compute(
-        "merge/srlattice1.glsl", defines={"SR_CFA_COMB": "%.4f" % comb}))
+        "merge/srlattice1.glsl", defines={"SR_CFA_COMB": "%.4f" % comb,
+                                          "SR_LATTICE_AA": "%d" % lat_aa}))
     prog["srDepV"] = 0
     prog["srDepW"] = 1
     prog["fusedOut"] = 0
@@ -803,8 +835,7 @@ def run_band(ctx, out, exp, depv, depw, aniso, args):
 
 def build_kmap(args, msz, kmap_vals):
     kmap = np.zeros((msz, msz, 4), dtype=np.float16)
-    if args.kmap == "real":
-        # The dump's real KernelNet map (raw/4, same physical texel pitch as
+    if args.kmap == "real":        # The dump's real KernelNet map (raw/4, same physical texel pitch as
         # the synthetic msz grid): a centered crop keeps the real statistics.
         import json
         dump = os.path.normpath(os.path.join(HERE, "..", "..", "srsamples", "srdump"))
@@ -833,6 +864,12 @@ def build_kmap(args, msz, kmap_vals):
         kmap[..., 0] = kmap_vals[0]
         kmap[..., 1] = kmap_vals[1]
     kmap[..., 3] = 1.0
+    if getattr(args, "kmapsig", 0.0) > 0.0:
+        # Regularize the map spatially: genuine edge anisotropy is coherent
+        # over many texels, per-block estimation noise is not.
+        kw = kmap.astype(np.float64)
+        kmap = np.stack([SB.blur(kw[..., c], args.kmapsig)
+                         for c in range(4)], -1).astype(np.float16)
     return kmap
 
 
@@ -1472,7 +1509,7 @@ def main():
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--scene", default="tones",
                     choices=["ramp", "tones", "edge", "diag", "grad", "photo",
-                             "grating", "arc"])
+                             "grating", "arc", "honey"])
     ap.add_argument("--block", type=int, default=0, choices=[0, 1],
                     help="overlay a coherently translating textured square "
                          "(the moving-subject scene for ghost tuning)")
@@ -1493,8 +1530,16 @@ def main():
     ap.add_argument("--comb", type=float, default=0.0,
                     help="SR_CFA_COMB define for srlattice1 (drizzle ships 0; "
                          "the raw-grid fallback keeps 0.4)")
+    ap.add_argument("--lataa", type=int, default=0, choices=[0, 1],
+                    help="SR_LATTICE_AA: centered 3x3-box drizzle read "
+                         "instead of the point sample (kills lattice-Nyquist "
+                         "moire on dense periodic detail)")
     ap.add_argument("--kmap", default="const",
                     choices=["const", "edge", "small", "blocky", "blockedge", "real"])
+    ap.add_argument("--kmapsig", type=float, default=0.0,
+                    help="Gaussian regularization of the kernels map in map "
+                         "texels (0 = off); kills per-block estimation noise "
+                         "while keeping coherent edge anisotropy")
     ap.add_argument("--alignerr", type=float, default=0.0,
                     help="residual per-frame alignment error amplitude (output px); "
                          "feeds the real trust gate and the deposit position")
@@ -1612,6 +1657,8 @@ def main():
     out = raw * exp
     if args.scene == "photo":
         args._photo = load_photo(args)
+    elif args.scene == "honey":
+        args._photo = make_honey(args)
     fx, fy, ph, amp, mtf = build_scene(args, rng)
 
     if args.jitter == "uniform":
@@ -1690,7 +1737,8 @@ def main():
         depv = blur_droplet(depv, "gauss", args.splatgauss)
         depw = blur_droplet(depw, "gauss", args.splatgauss)
 
-    drizzle, driz_w = run_drizzle(ctx, out, exp, depv, depw, args.comb)
+    drizzle, driz_w = run_drizzle(ctx, out, exp, depv, depw, args.comb,
+                                  lat_aa=args.lataa)
     mls_conf = -1.0
     if args.mls2:
         if args.srrefine:
