@@ -999,6 +999,36 @@ textures only, not the deposit geometry (the deposit-displacement sweep
 lives in `sr_bench --reg`); closing that gap is open bench work. `baseline.py`
 tracks `ramp1x9/diag1x9/tones1x9`.
 
+## Moving-block ghost scene + K1/K2 validation (shipped defaults kept)
+
+`--block 1` overlays a coherently translating textured square (any scene),
+threading the frame index through sampling and trust; the trail-zone ghost
+metric (excess trail residual over Disabled, base edge excluded) tunes the
+absolute gate. The K sweep needs `--srrefine 1` (the mock LK path - K only
+steers the `lf` mix; refine-off is K-independent by construction):
+
+| K1,K2 | meanW | ghost excess |
+|---|---|---|
+| 0.5,1.0 | 2.199 | +0.0029 |
+| 1.0,2.0 (shipped) | 2.223 | +0.0069 |
+| 2.0,4.0 | 2.244 | +0.0106 |
+
+Monotonic and sane (tighter = safer), but the mock warp is adversarially
+bogus everywhere, overstating absolute ghost. Keeping (1.0, 2.0): the
+refine demonstrably fixes residuals up to ~1 band (`refine_bench`), and
+K1=0.5 would second-guess half that range. The knob works if dumps show
+ghosting; the default preserves the refine's operating range.
+
+## Chroma fusion probe: small win, fixture-limited (not shipped)
+
+`--chromafuse` averages globally-aligned per-frame demosaiced chroma
+(`--chroma 0.3` scene tone; windowed notch metric): 0.90-0.91 at
+noise 0.01 (0.85 at 0.03). Decomposition shows the residual is ~95%
+deterministic demosaic bias (single-frame error identical with and
+without noise), which averaging cannot remove - and the bench demosaic
+is admittedly crude, so a better demosaic (or device data) could reopen
+it. Not worth a chroma-deposit pass on this evidence.
+
 ## High-zoom SR vs the pure anisotropic (srMaxExpand raised to 8x)
 
 Bench (real-texture crop, 9 frames, dump KernelNet map), SR vs the legacy

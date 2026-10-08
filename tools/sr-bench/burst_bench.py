@@ -143,29 +143,75 @@ def photo_field(args, x, y):
             + p[y0 + 1, x0] * (1 - fx) * fy + p[y0 + 1, x0 + 1] * fx * fy)
 
 
-def sample_scene(fx, fy, ph, amp, mtf, x, y, args):
+def block_field(args, x, y, frame=0):
+    """A coherently translating textured square (the moving-subject scene).
+
+    Additive bright square of side --blocksize centered at c0 + v*frame,
+    carrying its own two-tone texture (MTF-attenuated like the background
+    tones). Off (0.0) unless --block is set. tune: total displacement over
+    the burst should exceed the edge width for visible ghosting.
+    """
+    if not getattr(args, "block", 0):
+        return 0.0
+    try:
+        vx, vy = [float(v) for v in getattr(args, "blockvel", "1.0,0.3").split(",")[:2]]
+    except ValueError:
+        vx, vy = 1.0, 0.3
+    s = float(getattr(args, "blocksize", 16.0)) / 2.0
+    out = args.raw * args.exp
+    cx = out / 2.0 + vx * frame
+    cy = out / 2.0 + vy * frame
+    inside = (np.abs(x - cx) <= s) & (np.abs(y - cy) <= s)
+    if not np.any(inside):
+        return 0.0
+    # Block texture: one tone with the sensor MTF applied, like build_scene.
+    f1 = 0.18
+    fraw1 = f1 * args.exp
+    m1 = SB.sinc(fraw1) * np.exp(-2 * np.pi ** 2 * SB.LENS_SIGMA_RAW ** 2 * fraw1 ** 2)
+    tex = 0.30 + 0.12 * m1 * np.cos(2 * np.pi * f1 * x) * np.cos(2 * np.pi * f1 * y)
+    return np.where(inside, tex, 0.0)
+
+
+def block_boxes(args, frames):
+    """Axis-aligned block boxes per frame (x0, y0, x1, y1) in out px."""
+    try:
+        vx, vy = [float(v) for v in getattr(args, "blockvel", "1.0,0.3").split(",")[:2]]
+    except ValueError:
+        vx, vy = 1.0, 0.3
+    s = float(getattr(args, "blocksize", 16.0)) / 2.0
+    out = args.raw * args.exp
+    boxes = []
+    for f in range(frames):
+        cx = out / 2.0 + vx * f
+        cy = out / 2.0 + vy * f
+        boxes.append((cx - s, cy - s, cx + s, cy + s))
+    return boxes
+
+
+def sample_scene(fx, fy, ph, amp, mtf, x, y, args, frame=0):
     if args.scene == "photo":
-        return photo_field(args, x, y)
+        return photo_field(args, x, y) + block_field(args, x, y, frame)
     v = np.zeros(np.broadcast(x, y).shape)
     for k in range(len(fx)):
         v = v + amp[k] * mtf[k] * np.cos(2 * np.pi * (fx[k] * x + fy[k] * y) + ph[k])
-    return v + struct_field(args, x, y) + ramp_field(args, x, y) + getattr(args, "dc", 1.2)
+    return v + struct_field(args, x, y) + ramp_field(args, x, y) + block_field(args, x, y, frame) + getattr(args, "dc", 1.2)
 
 
-def scene_luma(fx, fy, ph, amp, x, y, args):
+def scene_luma(fx, fy, ph, amp, x, y, args, frame=0):
     if args.scene == "photo":
-        return photo_field(args, x, y)
+        return photo_field(args, x, y) + block_field(args, x, y, frame)
     v = np.zeros(np.broadcast(x, y).shape)
     for k in range(len(fx)):
         v = v + amp[k] * np.cos(2 * np.pi * (fx[k] * x + fy[k] * y) + ph[k])
-    return v + struct_field(args, x, y) + ramp_field(args, x, y) + getattr(args, "dc", 1.2)
+    return v + struct_field(args, x, y) + ramp_field(args, x, y) + block_field(args, x, y, frame) + getattr(args, "dc", 1.2)
 
 
-def make_packed(args, fx, fy, ph, amp, mtf, raw, dx, dy, rng, gain=1.0):
+def make_packed(args, fx, fy, ph, amp, mtf, raw, dx, dy, rng, gain=1.0,
+                frame=0):
     """One frame's packed CFA quads at its warped raw-site positions."""
     i = np.arange(raw)
     X, Y = np.meshgrid(i * args.exp - dx, i * args.exp - dy)
-    L = sample_scene(fx, fy, ph, amp, mtf, X, Y, args) * gain
+    L = sample_scene(fx, fy, ph, amp, mtf, X, Y, args, frame) * gain
     if args.chroma > 0:
         C = args.chroma * np.cos(2 * np.pi * (0.021 * X + 0.014 * Y) + 0.7)
     else:
@@ -335,24 +381,25 @@ def make_err_cells(args, asz, rng, f):
     if args.errfield in ("ramp", "both"):
         e += 2.0 * ramp
     if args.errfield in ("row", "rowboth"):
-        e += shear if args.errfield == "rowboth" else 2.0 * shear
+        e += 2.0 * shear
     return e * args.alignerr
 
 
-def make_trust(args, fx, fy, ph, amp, mtf, raw, err_cells):
+def make_trust(args, fx, fy, ph, amp, mtf, raw, err_cells, frame=0):
     """Packed (diff, base) quad textures for the trust gate: the aligned alter's
     content vs the base, separated by the residual error field. This is what
     srscatter's own 3x3 signed-mean gate reads, so the REAL formula decides
-    which sites contribute."""
+    which sites contribute. The alter is sampled at `frame` (moving content
+    rides along); the base is always frame 0."""
     if err_cells is None:
         return None
     i = np.arange(raw)
     X, Y = np.meshgrid(i * args.exp, i * args.exp)
-    base = sample_scene(fx, fy, ph, amp, mtf, X, Y, args)
+    base = sample_scene(fx, fy, ph, amp, mtf, X, Y, args, 0)
     eq = np.stack([resize_bilinear(err_cells[..., c], raw // 2) for c in range(2)], -1)
     ex = np.kron(eq[..., 0], np.ones((2, 2)))
     ey = np.kron(eq[..., 1], np.ones((2, 2)))
-    diff = sample_scene(fx, fy, ph, amp, mtf, X + ex, Y + ey, args)
+    diff = sample_scene(fx, fy, ph, amp, mtf, X + ex, Y + ey, args, frame)
 
     def pack(V):
         p = np.empty((raw // 2, raw // 2, 4))
@@ -1066,6 +1113,50 @@ def mtf_metrics_of(img, ref):
     return f50, area
 
 
+def chroma_fuse_bench(args, raw, out, exp, packed_frames, deltas, drizzle,
+                     band_on):
+    """Prototype: multi-frame chroma vs the single-frame crop chroma.
+
+    Per-frame demosaiced chroma (bilinear, raw grid) is upsampled to the
+    output grid, globally aligned by the known frame deltas (exact Fourier
+    shift) and averaged; the composed RGB is rebuilt as drizzle luma plus
+    the fused chroma. Scored against the analytic scene chroma: the true
+    chroma is a single narrow tone, so all chroma energy outside its notch
+    is noise + demosaic alias. Returns (fused_err, single_err, true_chroma).
+    """
+    from PIL import Image  # noqa: F401 (kept for parity with compose path)
+    chrs = []
+    for p in packed_frames:
+        rgb = demosaic_bilinear(raw, p)
+        yc = rgb[..., 0] * 0.2126 + rgb[..., 1] * 0.7152 + rgb[..., 2] * 0.0722
+        chrs.append(rgb - yc[..., None])
+    ups = []
+    for co, (dx, dy) in zip(chrs, deltas):
+        u = np.stack([resize_bilinear(co[..., c], out) for c in range(3)], -1)
+        ups.append(np.stack([fft_shift(u[..., c], dx, dy) for c in range(3)], -1))
+    fused = np.mean(ups, axis=0)
+    single = ups[0]
+    # True scene chroma at the output grid (unattenuated: 0.025 cyc/out
+    # loses ~nothing to the aperture).
+    Xo, Yo = np.meshgrid(np.arange(out) + 0.5, np.arange(out) + 0.5)
+    Ct = args.chroma * np.cos(2 * np.pi * (0.021 * Xo + 0.014 * Yo) + 0.7)
+    tc = np.stack([0.4 * Ct, 0.1 * Ct, -0.5 * Ct], -1)
+    tc = tc - (tc[..., 0] * 0.2126 + tc[..., 1] * 0.7152 + tc[..., 2] * 0.0722)[..., None]
+
+    def notch_err(co):
+        # Windowed band energy of the chroma error, skipping the true tone's
+        # own band (the Hanning in fft_band keeps its leakage out).
+        e = co - tc
+        m = (slice(8, -8), slice(8, -8))
+        tot = 0.0
+        for c in range(3):
+            b = fft_band(e[..., c], 0.03, 0.20)
+            tot += float(np.mean(b[m] ** 2))
+        return tot / 3.0
+
+    return notch_err(fused), notch_err(single), fused, single
+
+
 def report(tag, rec, truth, depw, composed, crop, out, exp, args, truth_ap=None,
            dis_img=None):
     m = (slice(8, -8), slice(8, -8))
@@ -1252,6 +1343,13 @@ def main():
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--scene", default="tones",
                     choices=["ramp", "tones", "edge", "diag", "grad", "photo"])
+    ap.add_argument("--block", type=int, default=0, choices=[0, 1],
+                    help="overlay a coherently translating textured square "
+                         "(the moving-subject scene for ghost tuning)")
+    ap.add_argument("--blocksize", type=float, default=16.0,
+                    help="moving square side in output px")
+    ap.add_argument("--blockvel", default="1.0,0.3",
+                    help="square velocity in output px per frame (x,y)")
     ap.add_argument("--cfa", default="on", choices=["on", "off"],
                     help="on: real merge/srluma per-site luma; off: ideal samples")
     ap.add_argument("--chroma", type=float, default=0.0,
@@ -1300,6 +1398,11 @@ def main():
                     help="MLS support radius in output px")
     ap.add_argument("--mlslam", type=float, default=1e-3,
                     help="MLS ridge relative to the local weight sum")
+    ap.add_argument("--chromafuse", action="store_true",
+                    help="prototype: average per-frame demosaiced chroma "
+                         "(globally aligned) instead of the single-frame "
+                         "crop chroma; scored on chroma noise+alias outside "
+                         "the true chroma notch (needs --chroma > 0)")
     ap.add_argument("--covadapt", type=float, default=0.0,
                     help="prototype: widen the reconstruction kernel by this factor "
                          "where the composed alpha (deposit coverage) is 0")
@@ -1402,8 +1505,8 @@ def main():
     asz = max(1, raw // 16)
     err_cells = [make_err_cells(args, asz, rng, f) for f in range(args.frames)]
     trust = None
-    if args.alignerr > 0:
-        trust = [None] + [make_trust(args, fx, fy, ph, amp, mtf, raw, err_cells[f])
+    if args.alignerr > 0 or getattr(args, "block", 0):
+        trust = [None] + [make_trust(args, fx, fy, ph, amp, mtf, raw, err_cells[f], f)
                           for f in range(1, args.frames)]
 
     ctx = moderngl.create_standalone_context(backend="egl")
@@ -1414,9 +1517,14 @@ def main():
         gains[1:] = 1.0 + args.gainerr * rng.standard_normal(args.frames - 1)
     lumas = []
     packed0 = None
+    packed_all = [] if args.chromafuse else None
     for f in range(args.frames):
         p = make_packed(args, fx, fy, ph, amp, mtf, raw, dxs[f], dys[f], rng,
-                        gain=float(gains[f]))
+                        gain=float(gains[f]), frame=f)
+        if f == 0:
+            packed0 = p
+        if packed_all is not None:
+            packed_all.append(p)
         if f == 0:
             packed0 = p
         if args.cfa == "on":
@@ -1474,6 +1582,16 @@ def main():
     print("  drizzle: weight mean=%.3f p10=%.3f | fallback alpha mean=%.3f" % (
         float(driz_w.mean()), float(np.quantile(driz_w, 0.1)),
         float(np.clip(driz_w / cov_ref, 0.0, 1.0).mean())))
+    chroma_res = None
+    if args.chromafuse:
+        if args.chroma <= 0:
+            raise SystemExit("--chromafuse needs --chroma > 0 (no true chroma to score)")
+        fused_err, single_err, _, _ = chroma_fuse_bench(
+            args, raw, out, exp, packed_all, deltas, drizzle, args.band)
+        chroma_res = (fused_err, single_err)
+        print("  chroma fuse: noise+alias fused=%.6f single=%.6f (ratio %.2f)" % (
+            fused_err, single_err,
+            fused_err / max(single_err, 1e-12)))
     kmap_vals = {"const": (0.4, 0.4), "edge": (0.8, 0.25), "small": (0.1, 0.1)}.get(
         args.kmap, (0.4, 0.4))
     alpha = None
@@ -1512,6 +1630,33 @@ def main():
     ok = True
     gates = []
     final_st = st2 if st2 is not None else st
+    ghost = None
+    if args.block:
+        # Trail zone: covered by the square in some alter frame but
+        # background in the base frame (2px margin off the base box, so the
+        # correctly-fused base edge never counts). Ghost = excess trail
+        # residual of the final image over Disabled; <=0 means no trail.
+        boxes = block_boxes(args, args.frames)
+        YG, XG = np.mgrid[0:out, 0:out].astype(np.float64)
+        trail = np.zeros((out, out), dtype=bool)
+        for f in range(1, args.frames):
+            x0, y0, x1, y1 = boxes[f]
+            trail |= (XG >= x0) & (XG < x1) & (YG >= y0) & (YG < y1)
+        bx0, by0, bx1, by1 = boxes[0]
+        trail &= ~((XG >= bx0 - 2) & (XG < bx1 + 2)
+                   & (YG >= by0 - 2) & (YG < by1 + 2))
+        trail &= (XG >= 8) & (XG < out - 8) & (YG >= 8) & (YG < out - 8)
+        final_img = fin if st2 is not None else rec
+        if dis_kern is not None and trail.any():
+            fa, _, _ = align(final_img, truth)
+            da, _, _ = align(dis_kern, truth)
+            g_sr = float(np.mean((fa - truth)[trail] ** 2))
+            g_dis = float(np.mean((da - truth)[trail] ** 2))
+            ghost = g_sr - g_dis
+            print("  block ghost: trail px=%d SR=%.6f Disabled=%.6f excess=%+.6f"
+                  % (int(trail.sum()), g_sr, g_dis, ghost))
+        else:
+            print("  block ghost: skipped (no trail or no kern Disabled)")
     if args.gate and args.scene == "ramp":
         gates.append(("artifactHF <= Disabled", final_st["art"] <= final_st["dis"] + 1e-4))
         gates.append(("artTop(0.42-0.5) <= 0.0025", final_st["top"] <= 2.5e-3))
@@ -1533,6 +1678,8 @@ def main():
                             drizWmean=float(driz_w.mean()),
                             drizWp10=float(np.quantile(driz_w, 0.1)),
                             mlsConf=float(mls_conf),
+                            ghost=ghost,
+                            chromaFuse=list(chroma_res) if chroma_res else None,
                             gates={n: bool(g) for n, g in gates}), _f,
                        indent=1, sort_keys=True)
     if args.save:
