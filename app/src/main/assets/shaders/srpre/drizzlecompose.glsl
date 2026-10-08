@@ -33,7 +33,21 @@ void main() {
     // blend back to the reference instead of carrying the sampling grid.
     // At the expected coverage the drizzle is used whole; the reference
     // scale keeps the fallback meaningful at any expansion or frame count.
-    float alpha = clamp(fw.g / max(srCovRef, 1e-3), 0.0, 1.0);
+    // The weight is low-passed over 3x3 first: per-texel weight noise
+    // (deposit sampling lattice, up to ~20% with a coherent 2px checker
+    // on real bursts) would otherwise modulate the mixing ratio texel by
+    // texel - pixelation exactly on detail, where drizzle and reference
+    // differ. True thin regions (holes, occlusion blobs) are coherent over
+    // many texels and survive the smoothing; the luma above stays
+    // point-sampled.
+    float wsum = 0.0;
+    for (int j = -1; j <= 1; j++) {
+        for (int i = -1; i <= 1; i++) {
+            wsum += unpackHalf2x16(texelFetch(FusedLuma,
+                    clamp(o + ivec2(i, j), ivec2(0), fmax), 0).x).y;
+        }
+    }
+    float alpha = clamp((wsum * (1.0 / 9.0)) / max(srCovRef, 1e-3), 0.0, 1.0);
     vec2 c = (vec2(o) + vec2(0.5)) * srPerOut;
     vec2 uv = c / vec2(textureSize(InputBuffer, 0));
     // Bicubic chroma: a bilinear crop upsample would leave a block grid at

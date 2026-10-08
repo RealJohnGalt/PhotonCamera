@@ -72,6 +72,21 @@ void main() {
     }
     float f = vs / ws;
     if (!(f <= 65504.0)) f = 0.0;
+    // Smoothed coverage: per-texel weight noise (deposit sampling lattice,
+    // coherent 2px checker on real bursts) would otherwise modulate the
+    // noise sigma and the coverage gate texel by texel; true thin regions
+    // are coherent over many texels and survive the smoothing.
+    float wss = 0.0;
+    {
+        ivec2 wmax = size - ivec2(1);
+        for (int j = -1; j <= 1; j++) {
+            for (int i = -1; i <= 1; i++) {
+                ivec2 t = clamp(o + ivec2(i, j), ivec2(0, 0), wmax);
+                wss += float(texelFetch(srDepW, t, 0).x) * SR_FIXED;
+            }
+        }
+    }
+    wss *= 1.0 / 9.0;
     float per = min(max(srPerOut.x, 1e-4), max(srPerOut.y, 1e-4));
     float sigN = srSigma(per, SR_F_RAW_NYQ);
     float sigC = srSigma(per, SR_F_RAW_TOP);
@@ -106,13 +121,13 @@ void main() {
     // Per-sample noise from the pre-inflation model over the accumulated
     // weight; the gate suppresses the restoration where the band is at or
     // below that noise.
-    float sigma = sqrt(max(srNoiseS0 * f + srNoiseO0, 1e-12) / max(ws, 1.0));
+    float sigma = sqrt(max(srNoiseS0 * f + srNoiseO0, 1e-12) / max(wss, 1.0));
     float t = SR_GATE_K * sigma / max(abs(band), 1e-9);
     float gate = max(0.0, 1.0 - t * t);
     // Coverage: holes and thin cells never carry restored detail, so the
     // band layer falls back to the aniso's own reconstruction there (no
     // ghosting into unsampled areas).
-    gate *= clamp(ws / max(srCoverageRef, 1.0), 0.0, 1.0);
+    gate *= clamp(wss / max(srCoverageRef, 1.0), 0.0, 1.0);
     band *= srRestoreGain(per);
     if (!(band <= 65504.0)) band = 0.0;
     if (!(gate <= 65504.0)) gate = 0.0;

@@ -1078,7 +1078,6 @@ crop of the pixelated region - the replay path (`sr_bench --replay`)
 can then drive the exact failing lattice instead of a synthetic guess.
 
 ## Dump-driven pixelation hunt (device honeycomb + foliage)
-
 A 17-frame 2x `SrDump` (grille + plant + table objects) finally put real
 failing data under the bench. Integrity: healthy (no non-finite, weight
 mean 4.22 ~= 4.25 expected, zero holes; band gate mean 0.048 - the
@@ -1107,6 +1106,21 @@ Findings, in order:
   order. The dump supplies the numbers that justify it: fold lines at
   0.466-0.482, ~20% top-band survival into the output, gate open
   (0.17-0.49) exactly where the content is phase-unstable.
+
+## Weight-lattice pixelation: smoothed mixing (shipped)
+
+A second dump (plant/table scene, severe regional pixelation) showed the
+other half: the drizzle *weight* map carries a billion-scale exact-0.5
+checker (coherent amplitude 0.048, std 0.19) while luma normalizes clean.
+The compose fallback (`alpha = w/covRef`) and the band coverage gate read
+per-texel weights, so the mixing ratio swung +-19% texel-by-texel -
+pixelation exactly on detail (where drizzle and reference differ),
+region-specific, SR-only, shot-dependent. Both consumers now low-pass the
+weight over 3x3 (luma/band values untouched): on dump weights the checker
+falls 0.048 -> 0.0005 (100x) while regional std is preserved
+(0.189 -> 0.167 - blobs kept, lattice killed). `--wcheck` imprints a 20%
+coherent checker in-bench: metrics with it match without (delivery
+0.48x -> 0.52x vs 0.53x clean); all gates green.
 
 `--scene honey` (sharp hex holes, pitch-calibrated to the dump) and
 `--kmapsig` stay as the scoring rigs; `replay_crop.py` stays as the

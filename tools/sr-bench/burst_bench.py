@@ -1582,6 +1582,10 @@ def main():
                     help="MLS support radius in output px")
     ap.add_argument("--mlslam", type=float, default=1e-3,
                     help="MLS ridge relative to the local weight sum")
+    ap.add_argument("--wcheck", type=float, default=0.0,
+                    help="proof rig: imprint a coherent 2px checker of this "
+                         "amplitude on the drizzle weight (device dumps show "
+                         "~20%% std); the smoothed fallback/gate must absorb it")
     ap.add_argument("--chromafuse", action="store_true",
                     help="prototype: average per-frame demosaiced chroma "
                          "(globally aligned) instead of the single-frame "
@@ -1752,6 +1756,18 @@ def main():
 
     drizzle, driz_w = run_drizzle(ctx, out, exp, depv, depw, args.comb,
                                   lat_aa=args.lataa)
+    if args.wcheck > 0.0:
+        # Proof rig for the weight-lattice disease: imprint a coherent 2px
+        # checker on the drizzle weight (device dumps show up to ~20% std
+        # with a 0.048 checkerboard amplitude). The smoothed fallback and
+        # gate must absorb it: metrics with the checker should match
+        # without.
+        wpre = float(driz_w.std())
+        yy, xx = np.mgrid[0:out, 0:out]
+        chk = ((xx + yy) & 1).astype(np.float64) * 2.0 - 1.0
+        driz_w = np.maximum(driz_w * (1.0 + args.wcheck * chk), 0.0)
+        print("  wcheck: amp=%.2f weight std %.3f -> %.3f" % (
+            args.wcheck, wpre, float(driz_w.std())))
     if args.drizcap > 0.0:
         # Prototype: Weber-cap the drizzle content above the band top.
         # Genuine near-Nyquist content is always weak (aperture MTF), folds
