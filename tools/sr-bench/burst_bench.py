@@ -46,7 +46,25 @@ def f2(a):
 # --------------------------------------------------------------------------
 def build_scene(args, rng):
     """Analytic scene components (cycles per OUTPUT px) and the sampling MTF."""
-    if args.scene == "ramp":
+    if args.scene == "grating":
+        # Strong gratings straddling the raw Nyquist, several orientations:
+        # a periodic-texture (roof-shingle) analog that beats against the
+        # sampling lattice - the pixelation repro scene.
+        fraw_list = [0.30, 0.36, 0.42, 0.46, 0.49]
+        angs = [0.0, np.pi / 4, np.pi / 2, 3 * np.pi / 4]
+        fxf, fyf, phf,ampf = [], [], [], []
+        for fa in fraw_list:
+            for a in angs:
+                fr = fa / args.exp
+                fxf.append(fr * np.cos(a))
+                fyf.append(fr * np.sin(a))
+                phf.append(rng.random() * 2 * np.pi)
+                ampf.append(0.25)
+        fx = np.array(fxf)
+        fy = np.array(fyf)
+        ph = np.array(phf)
+        amp = np.array(ampf)
+    elif args.scene == "ramp":
         fx = np.array([0.030, 0.055, 0.013])
         fy = np.array([0.041, 0.019, 0.062])
         ph = rng.random(3) * 2 * np.pi
@@ -1342,7 +1360,8 @@ def main():
     ap.add_argument("--noise", type=float, default=0.0)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--scene", default="tones",
-                    choices=["ramp", "tones", "edge", "diag", "grad", "photo"])
+                    choices=["ramp", "tones", "edge", "diag", "grad", "photo",
+                             "grating"])
     ap.add_argument("--block", type=int, default=0, choices=[0, 1],
                     help="overlay a coherently translating textured square "
                          "(the moving-subject scene for ghost tuning)")

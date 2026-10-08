@@ -35,6 +35,7 @@ CONFIGS = [
     ("ramp1x9", ["--scene", "ramp", "--frames", "9", "--exp", "1"]),
     ("diag1x9", ["--scene", "diag", "--frames", "9", "--exp", "1"]),
     ("tones1x9", ["--scene", "tones", "--frames", "9", "--exp", "1"]),
+    ("grating9", ["--scene", "grating", "--frames", "9"]),
 ]
 BASE = ["--cfa", "on", "--kmap", "real", "--gate", "off"]
 HIGHER = ("corr", "mtf50", "deliver", "below.amp", "c_sr", "c_lo", "c_hi")
