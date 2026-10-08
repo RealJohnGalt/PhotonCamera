@@ -1013,6 +1013,23 @@ def hp_rms(z, f0=0.30, f1=0.49):
     return float(np.sqrt(np.mean(fft_band(z, f0, f1) ** 2)))
 
 
+def windowed_max(resid, w=32):
+    """Max over non-overlapping windows of the local HF residual RMS: a
+    localized pixelation patch screams here while the full-frame mean stays
+    quiet. Returns (max, p99, mean) over interior windows."""
+    h,ww = resid.shape
+    vals = []
+    for y in range(8, h - 8 - w + 1, w):
+        for x in range(8, ww - 8 - w + 1, w):
+            sub = resid[y:y + w, x:x + w]
+            b = fft_band(sub, 0.30, 0.49)
+            vals.append(float(np.sqrt(np.mean(b ** 2))))
+    if not vals:
+        return 0.0, 0.0, 0.0
+    a = np.array(vals)
+    return float(a.max()), float(np.quantile(a, 0.99)), float(a.mean())
+
+
 def bilin(img, xc, yc):
     x = xc - 0.5
     y = yc - 0.5
@@ -1181,6 +1198,9 @@ def report(tag, rec, truth, depw, composed, crop, out, exp, args, truth_ap=None,
     rec_a, sx, sy = align(rec, truth)
     resid = rec_a - truth
     art_hf = float(np.sqrt(np.mean(fft_band(resid, 0.30, 0.49)[m] ** 2)))
+    # Localized pixelation: worst window's HF residual (a regional defect
+    # hides in the full-frame mean above).
+    wmax, wp99, wmean = windowed_max(resid)
     rec_hf = float(np.sqrt(np.mean(fft_band(rec_a, 0.30, 0.49)[m] ** 2)))
     tr_hf = float(np.sqrt(np.mean(fft_band(truth, 0.30, 0.49)[m] ** 2)))
     res_rms = float(np.sqrt(np.mean(resid[m] ** 2)))
@@ -1200,6 +1220,7 @@ def report(tag, rec, truth, depw, composed, crop, out, exp, args, truth_ap=None,
     dis_a, _, _ = align(dis, truth)
     dis_res = dis_a - truth
     dis_hf = float(np.sqrt(np.mean(fft_band(dis_res, 0.30, 0.49)[m] ** 2)))
+    dwmax, dwp99, dwmean = windowed_max(dis_res)
     mtf_ref = truth_ap if truth_ap is not None else truth
     mtf50_sr, mtf_area_sr = mtf_metrics_of(rec_a, mtf_ref)
     mtf50_dis, mtf_area_dis = mtf_metrics_of(dis_a, mtf_ref)
@@ -1244,6 +1265,8 @@ def report(tag, rec, truth, depw, composed, crop, out, exp, args, truth_ap=None,
           % (d_lat, d_mid, fmap, d_map, pixac, mtf50_sr, mtf50_dis,
              mtf_area_sr, mtf_area_dis))
     print("      MTF deposit (drizzle only): 50=%.3f area=%.3f" % (dep50, dep_area))
+    print("      local HF: worst-window SR=%.4f (p99 %.4f mean %.4f) | Disabled=%.4f (p99 %.4f mean %.4f)"
+          % (wmax, wp99, wmean, dwmax, dwp99, dwmean))
     edge_m = None
     grad_m = None
     below_m = None
@@ -1337,6 +1360,7 @@ def report(tag, rec, truth, depw, composed, crop, out, exp, args, truth_ap=None,
                      c_dis, c_dis_lo, c_dis_hi, err_ap, err_ap_dis))
     return dict(res=res_rms, art=art_hf, rec=rec_hf, tr=tr_hf, dis=dis_hf,
                 dep=dep_hf, top=art_top, meanw=meanw, frac10=frac10, zero=zero,
+                wmax=wmax, wp99=wp99, dwmax=dwmax,
                 deliver=del_ratio, deliver_dis=del_dis, d_lat=d_lat, d_map=d_map,
                 pixac=pixac, d_mid=d_mid, mtf50_sr=mtf50_sr, mtf50_dis=mtf50_dis,
                 mtf_area_sr=mtf_area_sr, mtf_area_dis=mtf_area_dis,
@@ -1637,8 +1661,9 @@ def main():
     st2 = None
     if args.band == "on":
         fin, band, gate = run_band(ctx, out, exp, depv, depw, rec, args)
-        print("  band layer: gate mean=%.3f p90=%.3f | band rms=%.4f"
-              % (gate.mean(), np.quantile(gate, 0.9), float(np.sqrt(np.mean(band ** 2)))))
+        print("  band layer: gate mean=%.3f p90=%.3f std=%.3f | band rms=%.4f"
+              % (gate.mean(), np.quantile(gate, 0.9), float(gate.std()),
+                 float(np.sqrt(np.mean(band ** 2)))))
         st2 = report("band", fin, truth, depw, composed, crop, out, exp, args, truth_ap,
                      dis_img=dis_kern)
         if args.save:
@@ -1709,6 +1734,7 @@ def main():
         save_png(args.save + "_resid.png", resid * 6.0 + 0.5)
         save_png(args.save + "_depw.png", np.sqrt(depw))
         save_png(args.save + "_luma0.png", lumas[0][..., 0])
+        save_png(args.save + "_drizw.png", driz_w / max(cov_ref, 1e-9))
         print("  saved %s_*.png" % args.save)
     return 0
 

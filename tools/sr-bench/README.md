@@ -1021,28 +1021,30 @@ never leaves. Static pairs stay at 0.000 on every cell. `--refcell` /
 ## Pixelation repro (device report: regional pixelation 1x/2x, never Disabled)
 
 `--scene grating` (strong near-Nyquist periods, several orientations) was
-added as the pixelation repro. Result: the synthetic chain does NOT make a
-sample-pitch grid in any configuration tried (uniform/handheld/fixed/
-clusters jitter, 9/40f, 1x/2x, const/edge/blocky maps: pixac +0.01..+0.12
-on grating; tones pixac is a wash). Ruled out synthetically: deposit
-splatting grid, static-diversity CFA mosaic, blocky-map pitch, 1x-vs-2x
-path difference. Standing suspects, all with live (if small) signals:
+added as the pixelation repro, plus windowed-max local HF metrics
+(`wmax/wp99`, in the baseline) and a drizzle-weight PNG dump, because a
+regional defect hides in full-frame means. Result: the synthetic chain
+does NOT pixelate by any metric tried - global, windowed-max, lattice
+(`pixac`), map-pitch, coverage-quartile - across jitter models
+(uniform/handheld/fixed/clusters), frame counts, 1x/2x, maps, trust
+patchwork, thin coverage, and acutance maps. Local worst-window SR stays
+at or below Disabled everywhere (tones 0.0110/0.0112, diag 0.0031/0.0045).
 
-- kernel-map-pitch region variation (`map()` energy elevated in every
-  run): the real map varies sharpness per region, so neighboring regions
-  reconstruct differently - matches "in some region" exactly;
-- moire-band over-delivery (top sub-band amp with ~0 corr on grating):
-  dense periodic detail renders as lattice-locked false texture;
-- trust patchwork: rejected regions keep fewer effective frames, so
-  their noise/sharpness texture differs from surroundings (block runs:
-  thinnest-coverage quartile artifact 3x the rest).
+Ruled out synthetically: deposit splat grid, static CFA mosaic,
+blocky-map pitch, path differences, trust patchwork at realistic
+residuals, acutance crunch, coverage-fallback shape. Two metric blind
+spots were checked and closed: `pixac` only sees coherent periodicity
+(the per-texel white-noise case is bounded by artifactHF/artTop
+instead), and rotation needs full-res geometry (ineffective at bench
+scale - the center-static regional signature is device-testable only).
 
-None reproduces a fixed grid without the device's real map, real
-trajectory, and real demosaic. Needed: an `SrDump` (FORCE=true) of a
-failing shot (lattice + band + depV/depW + kernels) plus the shot's
-frame count, zoom, and a crop of the pixelated region - the replay path
-(`sr_bench --replay`) can then drive the exact failing lattice instead
-of a synthetic guess.
+Standing suspects, all device-side: real-demosaic zipper unmasked by the
+sharp drizzle luma; the real map's coherent spatial structures (bench
+maps are stationary); real OIS/rotation motion fields; photon-noise
+regime effects. Needed: an `SrDump` (FORCE=true) of a failing shot
+(lattice + band + depV/depW + kernels) plus frame count, zoom, and a
+crop of the pixelated region - the replay path (`sr_bench --replay`)
+can then drive the exact failing lattice instead of a synthetic guess.
 
 ## Moving-block ghost scene + K1/K2 validation (shipped defaults kept)
 
