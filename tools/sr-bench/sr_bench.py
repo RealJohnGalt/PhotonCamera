@@ -1144,7 +1144,7 @@ def drizzle_recon_bench(ctx, raw, out, exp, sigma_scale, sigma_min, sharp_amt, a
 
 
 def refine_bench(ctx, raw, seed=11, cell=4, noise=0.002, cases=None,
-                 label=""):
+                 label="", structure="2d", shear=0.0, ref_defines=None):
     """Run the real merge/srrefine.glsl on a packed (base, alter) pair with a
     planted sub-pixel translation and photometric gain, and report what it
     recovers. This is the alignment tuner: capture range, confidence gating
@@ -1154,17 +1154,38 @@ def refine_bench(ctx, raw, seed=11, cell=4, noise=0.002, cases=None,
     std; cases: [(shift_raw_px, gain)] list (default the shipped five). The
     shipped gate (static ~0, recovery within 1.6x, gain in clamp range)
     applies to whatever cases are passed, so extended sweeps report their
-    own pass/fail without moving the build gate (main gates the default)."""
+    own pass/fail without moving the build gate (main gates the default).
+    structure: "2d" (two orthogonal gratings, gradients constrain both
+    axes), "1d" (single grating: the along-grating component is
+    unobservable and the fit must decline), "broadband" (six random tones,
+    the realistic mixed case). shear: rolling-shutter skew in raw px across
+    the pair height, added to the planted shift (breaks the translation
+    model the LK solves)."""
     p = raw // 2
     rng = np.random.default_rng(seed)
     # Two strong orthogonal components: gradients constrain both axes, so the
     # fit is observable everywhere (a random-direction scene can leave det
     # below the confidence gate and the shader correctly declines to fit).
-    k = 2
-    fx = np.array([0.10, 0.0])
-    fy = np.array([0.0, 0.11])
-    ph = np.array([0.3, 1.1])
-    amp = np.array([1.0, 1.0])
+    if structure == "1d":
+        k = 1
+        fx = np.array([0.10])
+        fy = np.array([0.0])
+        ph = np.array([0.3])
+        amp = np.array([1.0])
+    elif structure == "broadband":
+        k = 6
+        f = 0.5 * (0.15 + 0.85 * rng.random(k))
+        ang = rng.random(k) * 2 * np.pi
+        fx = f * np.cos(ang)
+        fy = f * np.sin(ang)
+        ph = rng.random(k) * 2 * np.pi
+        amp = 1.0 / (0.15 + f * 8.0)
+    else:
+        k = 2
+        fx = np.array([0.10, 0.0])
+        fy = np.array([0.0, 0.11])
+        ph = np.array([0.3, 1.1])
+        amp = np.array([1.0, 1.0])
 
     def scene(x, y):
         v = np.zeros(np.broadcast(x, y).shape)
@@ -1174,15 +1195,18 @@ def refine_bench(ctx, raw, seed=11, cell=4, noise=0.002, cases=None,
 
     def packed(dx, dy, gain):
         out = np.zeros((p, p, 4), dtype=np.float16)
+        yy = (2 * np.arange(p))[:, None]
+        skew = shear * (yy / max(p - 1, 1) - 0.5) if shear > 0 else 0.0
         for c in range(4):
             cx, cy = c & 1, c >> 1
-            sx = (2 * np.arange(p) + cx)[None, :] - dx
+            sx = (2 * np.arange(p) + cx)[None, :] - dx - skew
             sy = (2 * np.arange(p) + cy)[:, None] - dy
             out[..., c] = (gain * scene(sx, sy)
                            + noise * rng.standard_normal((p, p))).astype(np.float16)
         return ctx.texture((p, p), 4, np.ascontiguousarray(out).tobytes(), dtype="f2")
 
-    prog = ctx.compute_shader(load_compute("merge/srrefine.glsl"))
+    prog = ctx.compute_shader(load_compute(
+        "merge/srrefine.glsl", defines=ref_defines or None))
     grid = p // cell
     out_tex = ctx.texture((grid, grid), 4, dtype="f2")
 
@@ -1231,17 +1255,20 @@ def refine_bench(ctx, raw, seed=11, cell=4, noise=0.002, cases=None,
         # range rather than a tight fit.
         if abs(gain - g) > 0.12:
             ok = False
-    # first row is the static case (planted 0), last is a real translation
+    # first row is the static case (planted 0); the gain-1.05 row (if
+    # present) is the photometric check, else the second row stands in.
     d_plant = 0.6 / 2.0
     g_plant = 1.05
     dx0, dy0, gain0, resid0 = rows[0][2], rows[0][3], rows[0][4], rows[0][5]
-    dx1, dy1, gain1, resid1 = rows[3][2], rows[3][3], rows[3][4], rows[3][5]
+    grow = next((r for r in rows if r[0] > 0.0 and abs(r[1] - 1.05) < 1e-9),
+                rows[1] if len(rows) > 1 else rows[0])
+    dx1, dy1, gain1, resid1 = grow[2], grow[3], grow[4], grow[5]
     print("  srrefine sweep%s (planted raw px / recovered packed):"
           % ((" " + label) if label else ""))
     for d_raw, g, dx, dy, gain, resid in rows:
         print("    d_raw=%.2f gain=%.2f -> dx=%.3f dy=%.3f gain=%.3f resid=%.4f"
               % (d_raw, g, dx, dy, gain, resid))
-    return dx0, dy0, gain0, resid0, d_plant, g_plant, dx1, resid1, ok
+    return dx0, dy0, gain0, resid0, d_plant, g_plant, dx1, resid1, ok, rows
 
 
 
@@ -1465,6 +1492,19 @@ def main():
                     help="capture-range table: cells {2,4,8} x shifts "
                          "{0,0.6,1.2,2.0,3.0} raw px (informational; the "
                          "build gate stays on the default five cases)")
+    ap.add_argument("--refstruct", default="2d", choices=["2d", "1d", "broadband"],
+                    help="refine scene structure: 2d (both axes observable), "
+                         "1d (along-grating unobservable, must decline), "
+                         "broadband (realistic mixed case)")
+    ap.add_argument("--refshear", type=float, default=0.0,
+                    help="rolling-shutter skew in raw px across the pair "
+                         "height, added to planted shifts")
+    ap.add_argument("--refaniso", type=float, default=-1.0,
+                    help="override SR_REF_ANISO (shipped 0.2; -1 keeps the "
+                         "shader default)")
+    ap.add_argument("--ref1doff", action="store_true",
+                    help="SR_REF_1D_ON 0: disable the per-axis 1D solve "
+                         "(exact pre-change behavior)")
     ap.add_argument("--replay", default="",
                     help="replay a device SrDump folder (kernels/lattice/band + params.json)")
     args = ap.parse_args()
@@ -1860,7 +1900,7 @@ def main():
     tile_err = float(np.max(np.abs(tile_rows - bout[half:])))
     tile_ok = tile_err <= 5e-3 * max(1.0, float(np.max(np.abs(bout[half:]))))
 
-    dx, dy, gain, resid, d_plant, g_plant, dx1, resid1, refine_ok = refine_bench(ctx, raw)
+    dx, dy, gain, resid, d_plant, g_plant, dx1, resid1, refine_ok, _rows = refine_bench(ctx, raw)
     print("  srrefine: static dx=%.3f (must be ~0) | planted d=%.2fpx gain=%.3f -> "
           "dx=%.3f resid=%.4f %s"
           % (dx, d_plant, g_plant, dx1, resid1, "ok" if refine_ok else "FAIL"))
@@ -1868,10 +1908,32 @@ def main():
         cases = [(0.0, 1.0), (0.6, 1.0), (1.2, 1.0), (2.0, 1.0), (3.0, 1.0)]
         cells = [2, 4, 8] if args.refsweep else [args.refcell]
         for cell in cells:
-            _, _, _, _, _, _, _, _, cell_ok = refine_bench(
+            _, _, _, _, _, _, _, _, cell_ok, _ = refine_bench(
                 ctx, raw, cell=cell, noise=args.refnoise, cases=cases,
                 label="cell=%d noise=%.4f" % (cell, args.refnoise))
             print("    => cell=%d %s" % (cell, "ok" if cell_ok else "FAIL"))
+    if args.refstruct != "2d" or args.refshear > 0.0 or args.refaniso >= 0.0 \
+            or args.ref1doff:
+        # Structure/shear robustness: 1d must decline (dy ~ 0, the
+        # unobservable component); shear must degrade gracefully.
+        rdefs = {}
+        if args.refaniso >= 0.0:
+            rdefs["SR_REF_ANISO"] = "%.4f" % args.refaniso
+        if args.ref1doff:
+            rdefs["SR_REF_1D_ON"] = "0"
+        srows = refine_bench(
+            ctx, raw, cases=[(0.0, 1.0), (0.6, 1.0), (1.2, 1.0)],
+            label="struct=%s shear=%.2f aniso=%s%s" % (
+                args.refstruct, args.refshear,
+                "off" if args.refaniso < 0.0 else "%.2f" % args.refaniso,
+                "+no1d" if args.ref1doff else ""),
+            structure=args.refstruct, shear=args.refshear,
+            ref_defines=rdefs or None)[-1]
+        if args.refstruct == "1d":
+            dys = [abs(r[3]) for r in srows if r[0] > 0.0]
+            okd = all(d < 0.06 for d in dys)
+            print("    => 1d decline (max|dy|=%.3f) %s"
+                  % (max(dys), "ok" if okd else "FAIL"))
 
     print("srrecover bench: frames=%d noise=%.3f exp=%d" % (args.frames, args.noise, exp))
     print("  recovered-band corr=%.3f amplitude ratio=%.3f mean gate=%.3f"

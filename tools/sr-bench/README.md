@@ -913,6 +913,21 @@ the fallback directly (zero weight follows the crop at corr 0.997, not the
 drizzle). The `srdump` lattice for the drizzle path is the packed words
 (comp 2); the replay reads the luma channel, so old analysis still loads.
 
+## Refine 1D observability: per-axis solve (shipped)
+
+Phase-A robustness found a real bug: on axis-aligned 1D structure the det
+gate passes rank-1 matrices (clean zero off-diagonal => det == m00*m11),
+and the unobservable axis fitted pure noise (dy -0.22/-0.84 packed px on
+a pure x-grating) - lattice warping along real edges. `SR_REF_ANISO`
+(0.2) solves an axis carrying less than that fraction of the gradient
+energy as zero while keeping the observable one (dx 0.373/0.627 kept, dy
+0.000), with a decoupling guard so diagonal-1D still declines (a 1D fit
+there would misattribute normal motion). Noise (15x), shear (1px skew),
+broadband decline, and the default 2D gate all unchanged;
+`--refstruct 2d/1d/broadband`, `--refshear`, `--refaniso`, `--ref1doff`
+(exact pre-change behavior) cover it. Diagonal-1D declines via det as
+before; threshold-insensitive across 0.1-0.4 by construction.
+
 ## Detail headroom I: uniform gain scaling rejected (measured)
 
 Swept `--gainmax` 1.0/2.2/3.0/3.5 at 9 and 40 frames (tones, edge map,

@@ -105,28 +105,63 @@ void main() {
     // the along-edge component unobservable) and when the residual is at
     // least partly explained by a translation; the explained fraction is the
     // confidence, so noise, aliasing and deformation are not "corrected".
-    if (det > 0.1 * max(m00 * m11, 1e-12) && m00 + m11 > 1e-4) {
-        float invDet = 1.0 / det;
-        vec2 d = vec2(-(m11 * vx - m01 * vy) * invDet,
-                -(m00 * vy - m01 * vx) * invDet);
-        // d = -M^-1 v minimizes sum((r + d.g)^2), so the energy it explains is
-        // -(v.d) (positive), and the explained FRACTION is its R^2. The
-        // positive form (v.d) is the negative of that and clamps to 0, which
-        // silently zeroed every correction (the refinement was a no-op and
-        // the drizzle was stuck at the coarse atlas positions).
-        float conf = clamp(-(vx * d.x + vy * d.y) / max(rr, 1e-12), 0.0, 1.0);
-        // Squared confidence: noise-driven fits sit around 0.2-0.4 (their
-        // "explained" fraction is mostly the fit's own freedom) while real
-        // motion sits at 0.8+. Squaring suppresses the former sharply
-        // (0.04-0.16) and keeps the latter (0.64+) - benched: the linear form
-        // left noise warping the sampling lattice on static bursts.
-        // Capture range scales with confidence: the atlas can leave up to
-        // ~1 raw px of within-cell residual (rotation, rolling shutter) and
-        // the old flat 0.5 packed px (+-0.25 raw px) could not reach it; a
-        // confident fit is allowed up to 1.0 packed px while an uncertain one
-        // keeps the noise-safe 0.5.
-        float lim = mix(0.5, 1.0, smoothstep(0.5, 0.8, conf));
-        delta = clamp(d, vec2(-lim), vec2(lim)) * conf * conf;
+    // The determinant test alone passes axis-aligned 1D structure (a clean
+    // zero off-diagonal leaves det == m00*m11, i.e. ratio 1.0): the
+    // unobservable axis then fits pure noise (benched: dy up to 0.8 packed
+    // px on a pure x-grating), warping the lattice along real edges. An
+    // axis carrying less than SR_REF_ANISO of the gradient energy is
+    // solved as zero instead, keeping the observable one - but only when
+    // the axes are decoupled (a diagonal edge's correlated gradients must
+    // still decline, or the 1D fit misattributes normal motion). Tunable.
+#ifndef SR_REF_ANISO
+#define SR_REF_ANISO 0.2
+#endif
+#ifndef SR_REF_1D_ON
+#define SR_REF_1D_ON 1
+#endif
+    float anisoMin = SR_REF_ANISO * max(m00, m11);
+    float decouple = 0.1 * max(m00 * m11, 1e-12);
+    // d = -M^-1 v minimizes sum((r + d.g)^2), so the energy it explains is
+    // -(v.d) (positive), and the explained FRACTION is its R^2. The
+    // positive form (v.d) is the negative of that and clamps to 0, which
+    // silently zeroed every correction (the refinement was a no-op and
+    // the drizzle was stuck at the coarse atlas positions).
+    // Squared confidence: noise-driven fits sit around 0.2-0.4 (their
+    // "explained" fraction is mostly the fit's own freedom) while real
+    // motion sits at 0.8+. Squaring suppresses the former sharply
+    // (0.04-0.16) and keeps the latter (0.64+) - benched: the linear form
+    // left noise warping the sampling lattice on static bursts.
+    // Capture range scales with confidence: the atlas can leave up to
+    // ~1 raw px of within-cell residual (rotation, rolling shutter) and
+    // the old flat 0.5 packed px (+-0.25 raw px) could not reach it; a
+    // confident fit is allowed up to 1.0 packed px while an uncertain one
+    // keeps the noise-safe 0.5.
+    if (m00 + m11 > 1e-4) {
+        if (det > 0.1 * max(m00 * m11, 1e-12) && min(m00, m11) >= anisoMin) {
+            float invDet = 1.0 / det;
+            vec2 d = vec2(-(m11 * vx - m01 * vy) * invDet,
+                    -(m00 * vy - m01 * vx) * invDet);
+            float conf = clamp(-(vx * d.x + vy * d.y) / max(rr, 1e-12), 0.0, 1.0);
+            float lim = mix(0.5, 1.0, smoothstep(0.5, 0.8, conf));
+            delta = clamp(d, vec2(-lim), vec2(lim)) * conf * conf;
+#if SR_REF_1D_ON
+        } else if (m00 >= anisoMin && m00 > m11
+                && m01 * m01 <= decouple) {
+            // 1D along x: dx alone minimizes sum((r + dx*gx)^2); dy is
+            // unobservable and stays zero.
+            float d1 = -vx / max(m00, 1e-12);
+            float conf1 = clamp(-(vx * d1) / max(rr, 1e-12), 0.0, 1.0);
+            float lim1 = mix(0.5, 1.0, smoothstep(0.5, 0.8, conf1));
+            delta = vec2(clamp(d1, -lim1, lim1) * conf1 * conf1, 0.0);
+        } else if (m11 >= anisoMin && m11 > m00
+                && m01 * m01 <= decouple) {
+            // 1D along y, mirrored.
+            float d1 = -vy / max(m11, 1e-12);
+            float conf1 = clamp(-(vy * d1) / max(rr, 1e-12), 0.0, 1.0);
+            float lim1 = mix(0.5, 1.0, smoothstep(0.5, 0.8, conf1));
+            delta = vec2(0.0, clamp(d1, -lim1, lim1) * conf1 * conf1);
+#endif
+        }
     }
     // .z = residual RMS left after the correction: what the translation model
     // cannot explain (deformation, moving subjects). The drizzle's trust gate
