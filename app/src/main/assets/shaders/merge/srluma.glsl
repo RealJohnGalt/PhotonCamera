@@ -115,12 +115,35 @@ void main() {
     // exists to fuse), leaving a CFA-phase texture mosaic. One weighted luma
     // at every site - a green-only or class-inconsistent form leaves a
     // CFA-phase mosaic in the fused field.
-    float balR = (ownR > 0.5 ? own : (nR > 0.5 ? sR / nR : own)) / max(srWhitePoint.r, 1e-4)
-            + (ownR > 0.5 ? 0.0 : ownCorr);
-    float balG = (ownG > 0.5 ? own : (nG > 0.5 ? sG / nG : own)) / max(srWhitePoint.g, 1e-4)
-            + (ownG > 0.5 ? 0.0 : ownCorr);
-    float balB = (ownB > 0.5 ? own : (nB > 0.5 ? sB / nB : own)) / max(srWhitePoint.b, 1e-4)
-            + (ownB > 0.5 ? 0.0 : ownCorr);
+    // Confidence gate on the missing-channel fill: where the site disagrees
+    // with its same-colour median, the neighbourhood spans contrast the +-1
+    // neighbour average cannot straddle (sharp holes, micro-edges smaller
+    // than the CFA pitch): the fill mixes across boundaries and the
+    // correction above carries a CFA-phase error. Falling back toward the
+    // site's own gray value desaturates unresolvable chroma instead of
+    // inventing phase-modulated luma. Bench (honeycomb texture): below-
+    // Nyquist corr 0.28 -> 0.64 and delivery corr 0.19 -> 0.43 at 0.15,
+    // edges/texture neutral-to-better, ramp gates pass. Tunable for bench.
+#ifndef SR_LUMA_CONF
+#define SR_LUMA_CONF 0.15
+#endif
+#ifndef SR_LUMA_CONF_ON
+#define SR_LUMA_CONF_ON 1
+#endif
+    float lumConf = 1.0;
+    if (SR_LUMA_CONF_ON != 0 && SR_LUMA_CONF > 0.0) {
+        lumConf = exp(-pow((own - sOwnMed) / max(SR_LUMA_CONF * max(own, 1e-4), 1e-4), 2.0));
+    }
+    float g0 = own / max(ownWP, 1e-4);
+    float balR = ownR > 0.5 ? own / max(srWhitePoint.r, 1e-4)
+            : mix(g0, (nR > 0.5 ? sR / nR : own) / max(srWhitePoint.r, 1e-4), lumConf)
+              + ownCorr * lumConf;
+    float balG = ownG > 0.5 ? own / max(srWhitePoint.g, 1e-4)
+            : mix(g0, (nG > 0.5 ? sG / nG : own) / max(srWhitePoint.g, 1e-4), lumConf)
+              + ownCorr * lumConf;
+    float balB = ownB > 0.5 ? own / max(srWhitePoint.b, 1e-4)
+            : mix(g0, (nB > 0.5 ? sB / nB : own) / max(srWhitePoint.b, 1e-4), lumConf)
+              + ownCorr * lumConf;
     float y = 0.2126 * balR + 0.7152 * balG + 0.0722 * balB;
     imageStore(srLumaOut, site, vec4(y, own, 0.0, 0.0));
 }

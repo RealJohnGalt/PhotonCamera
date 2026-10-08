@@ -37,6 +37,7 @@ CONFIGS = [
     ("tones1x9", ["--scene", "tones", "--frames", "9", "--exp", "1"]),
     ("grating9", ["--scene", "grating", "--frames", "9"]),
     ("arc9", ["--scene", "arc", "--frames", "9"]),
+    ("honey9", ["--scene", "honey", "--frames", "9"]),
 ]
 BASE = ["--cfa", "on", "--kmap", "real", "--gate", "off"]
 HIGHER = ("corr", "mtf50", "deliver", "below.amp", "c_sr", "c_lo", "c_hi")

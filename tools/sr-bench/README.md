@@ -1097,6 +1097,30 @@ Findings, in order:
 `--kmapsig` stay as the scoring rigs; `replay_crop.py` stays as the
 dump-analysis tool.
 
+## Srluma confidence gate: the missing-channel fill was the corrupter (shipped)
+
+The `--cfa off` (ideal-sampling) control on the honeycomb scene showed the
+drizzle recovers fine detail well (delivery corr 0.19 -> 0.47, below-Nyq
+0.28 -> 0.82) - so the corruption sits in `srluma`'s cross-channel
+interpolation, not the deposit. The own-channel cap was innocent (sweep
+barely moves honey); the vector is the missing-channel +-1 neighbour
+average mixing across high-contrast micro-structure smaller than the CFA
+pitch. `SR_LUMA_CONF` (0.15) falls back toward the site's own gray value
+where the site disagrees with its same-colour median (unresolvable chroma
+desaturates instead of phase-modulating luma):
+
+| scene | before | after (0.15) |
+|---|---|---|
+| honey delivery / corr | 0.49x / 0.19 | 0.47x / 0.43 |
+| honey below-Nyq / corr | 0.46x / 0.28 | 0.51x / 0.64 |
+| arc delivery / corr | 0.54x / 0.53 | 0.60x / 0.64 |
+| diag / tones / grad / ramp | neutral-better | ramp gates PASS |
+| block ghost excess | +0.00132 | +0.00082 |
+
+`--lumaconf X` overrides (0 disables); the bead ratio note from the arc
+section stands (rms flat, ratio moves on its shrinking denominator).
+`baseline.py` tracks `honey9`.
+
 ## Moving-block ghost scene + K1/K2 validation (shipped defaults kept)
 
 `--block 1` overlays a coherently translating textured square (any scene),

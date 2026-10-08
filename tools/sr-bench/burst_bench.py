@@ -297,17 +297,21 @@ def make_packed(args, fx, fy, ph, amp, mtf, raw, dx, dy, rng, gain=1.0,
     return packed
 
 
-def run_srluma(ctx, raw, packed, corrcap=0.0, nocap=False, luma8=False):
+def run_srluma(ctx, raw, packed, corrcap=0.0, nocap=False, luma8=False,
+               lumaconf=-1.0):
     """Real merge/srluma on a packed RGGB quad frame -> per-site luma/own.
 
     Prototypes: corrcap overrides the shipped SR_CORR_CAP Weber cap;
     nocap disables it (SR_CORR_CAP_ON 0); luma8 uses an 8-point
-    trimmed-mean same-colour estimate."""
+    trimmed-mean same-colour estimate; lumaconf >= 0 overrides the shipped
+    SR_LUMA_CONF contrast gate (0 disables the gate)."""
     defines = {}
     if nocap:
         defines["SR_CORR_CAP_ON"] = "0"
     elif corrcap > 0:
         defines["SR_CORR_CAP"] = "%.4f" % corrcap
+    if lumaconf >= 0.0:
+        defines["SR_LUMA_CONF"] = "%.4f" % lumaconf
     src = SB.load_compute("merge/srluma.glsl", local=(8, 8, 1),
                           defines=defines or None)
     if luma8:
@@ -1534,6 +1538,11 @@ def main():
                     help="SR_LATTICE_AA: centered 3x3-box drizzle read "
                          "instead of the point sample (kills lattice-Nyquist "
                          "moire on dense periodic detail)")
+    ap.add_argument("--drizcap", type=float, default=0.0,
+                    help="prototype: Weber-cap the drizzle above-band-top "
+                         "content at this fraction of the local level "
+                         "(0 = off); genuine near-Nyquist content is weak "
+                         "by aperture physics, folds arrive strong")
     ap.add_argument("--kmap", default="const",
                     choices=["const", "edge", "small", "blocky", "blockedge", "real"])
     ap.add_argument("--kmapsig", type=float, default=0.0,
@@ -1592,6 +1601,9 @@ def main():
     ap.add_argument("--luma8", action="store_true",
                     help="prototype: 8-point trimmed-mean same-colour estimate "
                          "(cardinals + diagonals)")
+    ap.add_argument("--lumaconf", type=float, default=-1.0,
+                    help="override SR_LUMA_CONF (shipped 0.15; 0 disables "
+                         "the contrast gate); -1 keeps the shader default")
     ap.add_argument("--elongcap", type=float, default=1.4,
                     help="srElongCap: major kernel axis cap multiplier "
                          "(device SR 1.4, legacy 1.0)")
@@ -1706,7 +1718,8 @@ def main():
             packed0 = p
         if args.cfa == "on":
             lum = run_srluma(ctx, raw, p, corrcap=args.corrcap,
-                             nocap=args.nocap, luma8=args.luma8)
+                             nocap=args.nocap, luma8=args.luma8,
+                             lumaconf=args.lumaconf)
             lumas.append(lum)
         else:
             L = np.empty((raw, raw))
@@ -1739,6 +1752,22 @@ def main():
 
     drizzle, driz_w = run_drizzle(ctx, out, exp, depv, depw, args.comb,
                                   lat_aa=args.lataa)
+    if args.drizcap > 0.0:
+        # Prototype: Weber-cap the drizzle content above the band top.
+        # Genuine near-Nyquist content is always weak (aperture MTF), folds
+        # arrive strong - so a level-relative cap passes the former and
+        # clips only alias-dominated excess. Cutoff matches the recovery
+        # band top (sigma 0.5 px -> ~0.37 cyc/out).
+        import sr_bench as _SB
+
+        dlo = _SB.blur(drizzle, 0.5)
+        dref = _SB.blur(drizzle, 2.0)
+        dhi = drizzle - dlo
+        dcap = args.drizcap * np.maximum(dref, 1e-4)
+        drizzle = dlo + np.clip(dhi, -dcap, dcap)
+        print("  drizcap: k=%.3f hi-rms %.5f -> %.5f" % (
+            args.drizcap, float(np.sqrt(np.mean(dhi ** 2))),
+            float(np.sqrt(np.mean(np.clip(dhi, -dcap, dcap) ** 2)))))
     mls_conf = -1.0
     if args.mls2:
         if args.srrefine:
