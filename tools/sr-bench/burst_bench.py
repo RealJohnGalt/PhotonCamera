@@ -92,6 +92,12 @@ def build_scene(args, rng):
         fy = np.array([])
         ph = np.array([])
         amp = np.array([])
+    elif args.scene == "arc":
+        # Pure circular edge: the scene for beaded-edge (2-2 split) metrics.
+        fx = np.array([])
+        fy = np.array([])
+        ph = np.array([])
+        amp = np.array([])
     elif args.scene == "grad":
         # Smooth linear gradient (plus a trace of texture): the scene for the
         # banding / gradient-pixelation metrics.
@@ -124,6 +130,18 @@ def ramp_field(args, x, y):
     if args.scene != "grad":
         return 0.0
     return 0.30 * (x + 0.7 * y) / (args.raw * args.exp)
+
+
+def circ_field(args, x, y):
+    """Circular step edge (the beaded-edge scene): radius 0.3*out at the
+    center, 10-90 width ~1 output px. Curved edges hit 2-2 same-colour
+    splits along stretches where straight bench edges rarely do."""
+    if args.scene != "arc":
+        return 0.0
+    out = args.raw * args.exp
+    r = np.sqrt((x - out / 2.0) ** 2 + (y - out / 2.0) ** 2)
+    w = 0.5 * args.exp
+    return 0.5 * np.tanh((r - 0.3 * out) / w)
 
 
 def load_photo(args):
@@ -212,7 +230,7 @@ def sample_scene(fx, fy, ph, amp, mtf, x, y, args, frame=0):
     v = np.zeros(np.broadcast(x, y).shape)
     for k in range(len(fx)):
         v = v + amp[k] * mtf[k] * np.cos(2 * np.pi * (fx[k] * x + fy[k] * y) + ph[k])
-    return v + struct_field(args, x, y) + ramp_field(args, x, y) + block_field(args, x, y, frame) + getattr(args, "dc", 1.2)
+    return v + struct_field(args, x, y) + ramp_field(args, x, y) + circ_field(args, x, y) + block_field(args, x, y, frame) + getattr(args, "dc", 1.2)
 
 
 def scene_luma(fx, fy, ph, amp, x, y, args, frame=0):
@@ -221,7 +239,7 @@ def scene_luma(fx, fy, ph, amp, x, y, args, frame=0):
     v = np.zeros(np.broadcast(x, y).shape)
     for k in range(len(fx)):
         v = v + amp[k] * np.cos(2 * np.pi * (fx[k] * x + fy[k] * y) + ph[k])
-    return v + struct_field(args, x, y) + ramp_field(args, x, y) + block_field(args, x, y, frame) + getattr(args, "dc", 1.2)
+    return v + struct_field(args, x, y) + ramp_field(args, x, y) + circ_field(args, x, y) + block_field(args, x, y, frame) + getattr(args, "dc", 1.2)
 
 
 def make_packed(args, fx, fy, ph, amp, mtf, raw, dx, dy, rng, gain=1.0,
@@ -252,17 +270,16 @@ def make_packed(args, fx, fy, ph, amp, mtf, raw, dx, dy, rng, gain=1.0,
 def run_srluma(ctx, raw, packed, corrcap=0.0, nocap=False, luma8=False):
     """Real merge/srluma on a packed RGGB quad frame -> per-site luma/own.
 
-    Prototypes: corrcap adds a Weber cap on ownCorr; nocap removes the shipped
-    0.12 cap; luma8 uses an 8-point trimmed-mean same-colour estimate."""
-    src = SB.load_compute("merge/srluma.glsl", local=(8, 8, 1))
+    Prototypes: corrcap overrides the shipped SR_CORR_CAP Weber cap;
+    nocap disables it (SR_CORR_CAP_ON 0); luma8 uses an 8-point
+    trimmed-mean same-colour estimate."""
+    defines = {}
     if nocap:
-        cap_block = ("    {\n"
-                     "        float corrCap = 0.12 * max(own / max(ownWP, 1e-4), 1e-4);\n"
-                     "        ownCorr = corrCap * tanh(ownCorr / corrCap);\n"
-                     "    }")
-        if cap_block not in src:
-            raise SystemExit("srluma nocap anchor not found")
-        src = src.replace(cap_block, "")
+        defines["SR_CORR_CAP_ON"] = "0"
+    elif corrcap > 0:
+        defines["SR_CORR_CAP"] = "%.4f" % corrcap
+    src = SB.load_compute("merge/srluma.glsl", local=(8, 8, 1),
+                          defines=defines or None)
     if luma8:
         # Prototype: 8-point same-colour estimate (cardinals + diagonals, all
         # same CFA parity) with a trimmed mean (drop one min and one max).
@@ -294,13 +311,6 @@ def run_srluma(ctx, raw, packed, corrcap=0.0, nocap=False, luma8=False):
         if old_med not in src:
             raise SystemExit("srluma luma8 median anchor not found")
         src = src.replace(old_med, "    float sOwnMed = sOwnV.x;")
-    if corrcap > 0:
-        old = "    float ownCorr = (own - sOwnMed) / max(ownWP, 1e-4);"
-        new = (old + "\n    float corrCap = %.4f * max(own / max(ownWP, 1e-4), 1e-4);\n"
-               "    ownCorr = corrCap * tanh(ownCorr / corrCap);" % corrcap)
-        if old not in src:
-            raise SystemExit("srluma corrcap anchor not found")
-        src = src.replace(old, new)
     ptex = ctx.texture((raw // 2, raw // 2), 4, f2(packed), dtype="f2")
     out = ctx.texture((raw, raw), 4, dtype="f2")
     out.bind_to_image(0, read=False, write=True)
@@ -1101,6 +1111,69 @@ def edge_metrics(img, out, exp, nx=1.0, ny=0.6, c_frac=0.9):
     return stair, rise, over, over_b, over_d
 
 
+def arc_metrics(img, out, exp):
+    """Circular-edge metrology: radial crossing per angle (staircase),
+    10-90 rise across the rim, overshoot past the plateaus, and the bead
+    metric - azimuthal chatter of the on-edge luminance past CFA pitch.
+    Beads are the 2-2 same-colour-split signature: alternating-sign error
+    at ~2 output px along the rim that a straight edge rarely shows."""
+    cx = cy = out / 2.0
+    rr = 0.3 * out
+    n = 256
+    th = np.linspace(0.0, 2 * np.pi, n, endpoint=False)
+    ux, uy = np.cos(th), np.sin(th)
+    mid = 0.5 * (np.percentile(img, 5) + np.percentile(img, 95))
+    pos = []
+    for k in range(n):
+        rs = np.arange(rr - 8.0, rr + 8.0 + 1e-9, 0.5)
+        prof = np.array([bilin(img, cx + ux[k] * r, cy + uy[k] * r) for r in rs])
+        s = np.sign(prof - mid)
+        idx = np.where(np.diff(s) != 0)[0]
+        if len(idx) == 0:
+            pos.append(np.nan)
+            continue
+        i = idx[0]
+        v0, v1 = prof[i], prof[i + 1]
+        pos.append(rs[i] + (mid - v0) / (v1 - v0 + 1e-12) * (rs[i + 1] - rs[i]))
+    pos = np.array(pos)
+    good = ~np.isnan(pos)
+    stair = float(np.sqrt(np.mean((pos[good] - rr) ** 2))) if good.sum() > 16 else np.nan
+    # Rise: mean radial profile over angles.
+    profs = []
+    for k in range(0, n, 4):
+        rs = np.arange(rr - 8.0, rr + 8.0 + 1e-9, 0.5)
+        profs.append([bilin(img, cx + ux[k] * r, cy + uy[k] * r) for r in rs])
+    P = np.mean(profs, 0)
+    lo = float(np.mean(P[:3]))
+    hi = float(np.mean(P[-3:]))
+    Q = (P - lo) / (hi - lo + 1e-12)
+    over = float(max(Q.max() - 1.0, -Q.min(), 0.0))
+    Pn = (P - P.min()) / (P.max() - P.min() + 1e-12)
+
+    def cross(level):
+        for i in range(len(Pn) - 1):
+            if (Pn[i] - level) * (Pn[i + 1] - level) <= 0:
+                return i * 0.5 + (level - Pn[i]) / (Pn[i + 1] - Pn[i] + 1e-12) * 0.5
+        return np.nan
+    rise = float(abs(cross(0.9) - cross(0.1)))
+    # Beads: on-edge luminance around the rim, minus its slow azimuthal
+    # variation; the remainder's energy at/above the CFA pitch (0.4-0.5
+    # cyc/out) is the bead band. Truth's rim is perfect (bead ~0).
+    rim = np.array([bilin(img, cx + ux[k] * rr, cy + uy[k] * rr) for k in range(n)])
+    k = np.array([0.25, 0.5, 0.25])
+    slow = np.convolve(np.concatenate([rim, rim, rim]), k, mode="same")[n:2 * n]
+    chat = rim - slow
+    F = np.abs(np.fft.rfft(chat * np.hanning(n))) ** 2
+    fr = np.fft.rfftfreq(n, d=(2 * np.pi * rr) / n)
+    # Ratio against the slow-variation band with an absolute floor (a
+    # perfect rim has no slow variation to divide by; bead_rms below is
+    # the floor-free companion).
+    bead = float(F[(fr >= 0.4) & (fr < 0.5)].mean()
+                 / max(F[(fr >= 0.02) & (fr < 0.10)].mean(), 1e-6))
+    bead_rms = float(np.sqrt(np.mean(chat ** 2)))
+    return stair, rise, over, bead, bead_rms
+
+
 def align(rec, ref):
     return fit_shift(rec, ref)
 
@@ -1270,6 +1343,20 @@ def report(tag, rec, truth, depw, composed, crop, out, exp, args, truth_ap=None,
     edge_m = None
     grad_m = None
     below_m = None
+    arc_m = None
+    if args.scene == "arc":
+        st_sr, ri_sr, ov_sr, bd_sr, br_sr = arc_metrics(rec_a, out, exp)
+        st_dis, ri_dis, ov_dis, bd_dis, br_dis = arc_metrics(dis_a, out, exp)
+        st_tr, ri_tr, ov_tr, bd_tr, br_tr = arc_metrics(truth, out, exp)
+        print("      arc: staircase SR=%.3f Dis=%.3f truth=%.3f px | "
+              "rise10-90 SR=%.2f Dis=%.2f truth=%.2f px | overshoot SR=%.1f%% "
+              "Dis=%.1f%% truth=%.1f%% | bead SR=%.2f/%.4f Dis=%.2f/%.4f truth=%.2f/%.4f"
+              % (st_sr, st_dis, st_tr, ri_sr, ri_dis, ri_tr,
+                 100.0 * ov_sr, 100.0 * ov_dis, 100.0 * ov_tr,
+                 bd_sr, br_sr, bd_dis, br_dis, bd_tr, br_tr))
+        arc_m = dict(stair=st_sr, rise=ri_sr, over=ov_sr, bead=bd_sr,
+                     bead_rms=br_sr, stair_dis=st_dis, rise_dis=ri_dis,
+                     over_dis=ov_dis, bead_dis=bd_dis)
     if args.scene in ("edge", "diag"):
         st_sr, ri_sr, ov_sr, ob_sr, od_sr = edge_metrics(rec_a, out, exp)
         st_dis, ri_dis, ov_dis, ob_dis, od_dis = edge_metrics(dis_a, out, exp)
@@ -1365,7 +1452,7 @@ def report(tag, rec, truth, depw, composed, crop, out, exp, args, truth_ap=None,
                 pixac=pixac, d_mid=d_mid, mtf50_sr=mtf50_sr, mtf50_dis=mtf50_dis,
                 mtf_area_sr=mtf_area_sr, mtf_area_dis=mtf_area_dis,
                 edge=edge_m, grad=grad_m, below=below_m, c_sr=c_sr, c_lo=c_lo,
-                c_hi=c_hi, c_dis=c_dis)
+                c_hi=c_hi, c_dis=c_dis, arc=arc_m)
 
 
 def save_png(path, a):
@@ -1385,7 +1472,7 @@ def main():
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--scene", default="tones",
                     choices=["ramp", "tones", "edge", "diag", "grad", "photo",
-                             "grating"])
+                             "grating", "arc"])
     ap.add_argument("--block", type=int, default=0, choices=[0, 1],
                     help="overlay a coherently translating textured square "
                          "(the moving-subject scene for ghost tuning)")
@@ -1453,8 +1540,8 @@ def main():
                     help="prototype: narrow the reconstruction kernel to this "
                          "factor where coverage is 1 (deconvolve the dense deposit)")
     ap.add_argument("--corrcap", type=float, default=0.0,
-                    help="prototype: Weber cap on srluma's cross-channel correction "
-                         "as a fraction of the site level (0 = shipped, unbounded)")
+                    help="prototype: override the shipped SR_CORR_CAP Weber cap "
+                         "on srluma's cross-channel correction (0 = shipped 0.12)")
     ap.add_argument("--nocap", action="store_true",
                     help="prototype: remove the shipped 0.12 srluma cap")
     ap.add_argument("--luma8", action="store_true",

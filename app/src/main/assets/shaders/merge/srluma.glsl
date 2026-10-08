@@ -59,6 +59,24 @@ void main() {
     float sOwnMed = 0.5 * (max(min(sOwnV.x, sOwnV.y), min(sOwnV.z, sOwnV.w))
             + min(max(sOwnV.x, sOwnV.y), max(sOwnV.z, sOwnV.w)));
     float ownCorr = (own - sOwnMed) / max(ownWP, 1e-4);
+    // Weber cap on the cross-channel correction: the median still straddles
+    // the edge on 2-2 neighbour splits (curved and soft edges hit those
+    // along stretches where straight edges rarely do), overshooting by half
+    // a step at the CFA phase - beaded edges. The cap costs some straight-
+    // edge amplitude (bench: 0.84x -> 0.65x) for ideal beads, halved
+    // overshoot and unity below-Nyquist amplitude. Tunable for the bench.
+#ifndef SR_CORR_CAP
+#define SR_CORR_CAP 0.12
+#endif
+#ifndef SR_CORR_CAP_ON
+#define SR_CORR_CAP_ON 1
+#endif
+#if SR_CORR_CAP_ON
+    {
+        float corrCap = SR_CORR_CAP * max(own / max(ownWP, 1e-4), 1e-4);
+        ownCorr = corrCap * tanh(ownCorr / corrCap);
+    }
+#endif
     // Interpolate the two missing colours from the eight neighbours (four
     // cardinals + four diagonals): at an R/B site that is four of each other
     // colour, at a G site two of each, so one uniform formula covers every

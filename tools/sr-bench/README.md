@@ -1018,6 +1018,22 @@ grid change; a coarse-to-fine extension would only help shifts the atlas
 never leaves. Static pairs stay at 0.000 on every cell. `--refcell` /
 `--refnoise` allow re-sweeps; the build gate stays on the default five.
 
+## Beaded edges: curved-edge scene restores the srluma Weber cap (shipped)
+
+Code reasoning found it: the median fixes 4-0/3-1 same-colour splits but
+2-2 splits still overshoot by half a step at CFA phase, and curved/soft
+edges hit 2-2 along stretches where straight bench edges rarely do - after
+the 0.12 cap was removed as "no longer needed", nothing bounded it. The
+new `--scene arc` (circular step) with the bead metric (azimuthal chatter
+at CFA pitch along the rim) isolates it: SR beads 0.0089 rms vs 0.0076
+for ideal (CFA-free) samples vs 0.0178 Disabled. Restoring
+`SR_CORR_CAP 0.12` (sweepable, `SR_CORR_CAP_ON` kill-switch for the
+bench) reaches ideal beads (0.0079), halves straight-edge overshoot
+(7.4% -> 4.0%) and returns below-Nyquist amplitude to unity
+(1.13x -> 1.03x), for ~20% straight-edge band amplitude (corr intact:
+0.55 -> 0.53; 1x delivery 0.93x -> 0.77x at corr 0.87). The pixelation
+report's edge component is this mechanism rendered in half-step dots.
+
 ## Pixelation repro (device report: regional pixelation 1x/2x, never Disabled)
 
 `--scene grating` (strong near-Nyquist periods, several orientations) was
